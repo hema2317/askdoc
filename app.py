@@ -22,12 +22,22 @@ def home():
 
 @app.route("/ask", methods=["POST"])
 def ask():
-    if request.is_json:
-        data = request.get_json()
-        question = data.get("query", "")
-        return jsonify({"response": f"🧠 AskDoc: You asked: {question} (Pretend AI answer here)"})
-    else:
-        return jsonify({"error": "Invalid input, must be JSON"}), 400
+    try:
+        query = request.form.get("query") or ""
+        uploaded_file = request.files.get("file")
+        
+        print("User Query:", query)
+        if uploaded_file:
+            print("File uploaded:", uploaded_file.filename)
+
+        # Simulate AI reply
+        response_text = f"You asked: {query} (Pretend AI answer here)"
+        return jsonify({"response": response_text})
+
+    except Exception as e:
+        print("Error:", str(e))
+        return jsonify({"error": str(e)}), 400
+
 
 if __name__ == '__main__':
     app.run(debug=True)
