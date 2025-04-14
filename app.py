@@ -1,151 +1,47 @@
-import React, { useState } from 'react';
-import {
-  StyleSheet,
-  Text,
-  View,
-  TextInput,
-  TouchableOpacity,
-  ScrollView,
-  SafeAreaView,
-  Platform,
-  KeyboardAvoidingView,
-  Alert,
-} from 'react-native';
-import * as DocumentPicker from 'expo-document-picker';
+from flask import Flask, request, jsonify, send_file
+from flask_cors import CORS
+from fpdf import FPDF
+import tempfile
 
-export default function App() {
-  const [query, setQuery] = useState('');
-  const [chatHistory, setChatHistory] = useState([]);
+app = Flask(__name__)
+CORS(app)
 
-  const handleAsk = () => {
-    if (!query.trim()) return;
-    const mockAnswer = `Pretend AI answer to: "${query}"`;
-    setChatHistory([...chatHistory, { q: query, a: mockAnswer }]);
-    setQuery('');
-  };
+# In-memory chat history
+chat_history = []
 
-  const handleFilePick = async () => {
-    const result = await DocumentPicker.getDocumentAsync({});
-    if (result.type === 'success') {
-      Alert.alert('File Selected', result.name);
-    }
-  };
+@app.route("/ask", methods=["POST"])
+def ask():
+    query = request.form.get("query")
+    if not query:
+        return jsonify({"response": "❌ No query received."}), 400
 
-  const handleVoiceInput = async () => {
-    try {
-      alert('🎤 Voice-to-text not implemented yet.');
-    } catch (error) {
-      console.error('Voice error:', error);
-    }
-  };
+    # Generate a pretend AI answer
+    answer = f"Pretend AI answer to: \"{query}\""
+    chat_history.append({"q": query, "a": answer})
 
-  return (
-    <SafeAreaView style={styles.container}>
-      <KeyboardAvoidingView
-        behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
-        style={{ flex: 1 }}
-        keyboardVerticalOffset={80}
-      >
-        <Text style={styles.header}>🩺 AskDoc</Text>
+    return jsonify({"response": answer})
 
-        <ScrollView style={styles.chatLog} contentContainerStyle={{ paddingBottom: 80 }}>
-          {chatHistory.map((entry, index) => (
-            <View key={index} style={styles.message}>
-              <Text style={styles.question}>🧠 Q: <Text style={styles.bold}>{entry.q}</Text></Text>
-              <Text style={styles.answer}>💬 A: {entry.a}</Text>
-            </View>
-          ))}
-        </ScrollView>
+@app.route("/history", methods=["GET"])
+def history():
+    return jsonify(chat_history)
 
-        <View style={styles.inputArea}>
-          <TextInput
-            style={styles.input}
-            value={query}
-            onChangeText={setQuery}
-            placeholder="Ask a health question..."
-            multiline
-          />
-          <View style={styles.row}>
-            <TouchableOpacity onPress={handleVoiceInput} style={styles.button}>
-              <Text>🎙 Voice</Text>
-            </TouchableOpacity>
-            <TouchableOpacity onPress={handleFilePick} style={styles.button}>
-              <Text>📎 File</Text>
-            </TouchableOpacity>
-            <TouchableOpacity onPress={handleAsk} style={[styles.button, styles.askBtn]}>
-              <Text style={{ color: 'white' }}>Ask</Text>
-            </TouchableOpacity>
-          </View>
-        </View>
-      </KeyboardAvoidingView>
-    </SafeAreaView>
-  );
-}
+@app.route("/download", methods=["GET"])
+def download_pdf():
+    if not chat_history:
+        return "No conversation to download.", 400
 
-const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-    backgroundColor: '#eaf6ff',
-    paddingHorizontal: 16,
-  },
-  header: {
-    fontSize: 28,
-    fontWeight: 'bold',
-    textAlign: 'center',
-    marginVertical: 16,
-    color: '#0084ff',
-  },
-  chatLog: {
-    flex: 1,
-    marginBottom: 8,
-  },
-  message: {
-    marginBottom: 16,
-    padding: 12,
-    backgroundColor: '#fff',
-    borderRadius: 12,
-    shadowColor: '#000',
-    shadowOpacity: 0.1,
-    shadowRadius: 5,
-    elevation: 2,
-  },
-  question: {
-    fontSize: 16,
-    marginBottom: 4,
-  },
-  answer: {
-    fontSize: 15,
-    color: '#333',
-  },
-  bold: {
-    fontWeight: 'bold',
-  },
-  inputArea: {
-    paddingVertical: 12,
-  },
-  input: {
-    backgroundColor: '#fff',
-    padding: 12,
-    borderRadius: 10,
-    borderWidth: 1,
-    borderColor: '#ccc',
-    fontSize: 16,
-    marginBottom: 8,
-    minHeight: 60,
-  },
-  row: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    gap: 10,
-  },
-  button: {
-    flex: 1,
-    padding: 10,
-    backgroundColor: '#e6f0f7',
-    borderRadius: 8,
-    alignItems: 'center',
-  },
-  askBtn: {
-    backgroundColor: '#0084ff',
-  },
-});
+    pdf = FPDF()
+    pdf.add_page()
+    pdf.set_font("Arial", size=12)
+    pdf.multi_cell(0, 10, "AskDoc Conversation Log\n", align="L")
+    pdf.ln()
+
+    for i, item in enumerate(chat_history, 1):
+        pdf.multi_cell(0, 10, f"{i}. Q: {item['q']}\nA: {item['a']}\n", align="L")
+
+    temp = tempfile.NamedTemporaryFile(delete=False, suffix=".pdf")
+    pdf.output(temp.name)
+    return send_file(temp.name, as_attachment=True, download_name="AskDoc_Conversation.pdf")
+
+if __name__ == "__main__":
+    app.run(debug=True)
