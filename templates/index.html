@@ -1,11 +1,22 @@
 <!DOCTYPE html>
-<html>
-<head><title>AskDoc</title></head>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>AskDoc</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <link rel="stylesheet" href="/static/style.css">
+</head>
 <body>
-  <h2>Ask a Doctor</h2>
-  <form method="post" action="/ask">
-    <input name="question" placeholder="Ask your question here" />
-    <button type="submit">Ask</button>
-  </form>
+  <div class="container">
+    <h1>🩺 AskDoc</h1>
+    <form id="askForm">
+      <textarea name="query" id="query" rows="4" placeholder="Ask a health question..."></textarea>
+      <button type="button" onclick="startListening()">🎤 Voice</button>
+      <input type="file" name="file" id="file" />
+      <button type="submit">Ask</button>
+    </form>
+    <div id="response"></div>
+  </div>
+  <script src="/static/script.js"></script>
 </body>
 </html>
