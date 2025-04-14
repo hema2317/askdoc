@@ -5,7 +5,10 @@
   <title>AskDoc</title>
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <!-- ✅ Use url_for to load CSS via Flask -->
-  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+  <!-- inside <head> -->
+<link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+<!-- at end of body -->
+<script src="{{ url_for('static', filename='script.js') }}"></script>
 </head>
 <body>
   <div class="container">
