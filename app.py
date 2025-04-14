@@ -1,6 +1,6 @@
 from flask import Flask, request, jsonify, render_template, send_file
 from flask_cors import CORS
-import openai
+from openai import OpenAI
 import os
 from fpdf import FPDF
 import tempfile
@@ -8,7 +8,8 @@ import tempfile
 app = Flask(__name__)
 CORS(app)
 
-openai.api_key = os.environ.get("OPENAI_API_KEY")  # Set in Render dashboard
+# Initialize OpenAI client (NEW SDK)
+client = OpenAI(api_key=os.environ.get("OPENAI_API_KEY"))  # Set in Render environment
 
 chat_history = []
 
@@ -23,15 +24,15 @@ def ask():
         return jsonify({"response": "❌ No query received."}), 400
 
     try:
-        # ChatGPT Response
-        response = openai.ChatCompletion.create(
+        # ChatGPT Response using new OpenAI SDK
+        response = client.chat.completions.create(
             model="gpt-3.5-turbo",
             messages=[
                 {"role": "system", "content": "You are a helpful health assistant."},
                 {"role": "user", "content": query}
             ]
         )
-        answer = response["choices"][0]["message"]["content"].strip()
+        answer = response.choices[0].message.content.strip()
         chat_history.append({"q": query, "a": answer})
         return jsonify({"response": answer})
     except Exception as e:
