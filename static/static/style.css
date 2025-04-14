@@ -1,36 +1,44 @@
 body {
-  font-family: sans-serif;
-  background: #f2f2f2;
+  font-family: Arial, sans-serif;
+  background-color: #f5f7fa;
+  padding: 20px;
   margin: 0;
-  padding: 0;
 }
 
 .container {
-  max-width: 500px;
+  max-width: 600px;
   margin: auto;
   background: white;
   padding: 20px;
-  margin-top: 40px;
-  border-radius: 10px;
+  border-radius: 12px;
   box-shadow: 0 0 10px rgba(0,0,0,0.1);
 }
 
-textarea, input[type="file"], button {
+textarea {
   width: 100%;
-  margin-top: 10px;
-  padding: 10px;
-  border-radius: 5px;
+  padding: 12px;
+  font-size: 16px;
+  border-radius: 8px;
   border: 1px solid #ccc;
+  margin-bottom: 12px;
 }
 
 button {
-  background: #28a745;
-  color: white;
+  margin: 5px 5px 5px 0;
+  padding: 10px 16px;
+  background-color: #007bff;
   border: none;
+  color: white;
+  border-radius: 8px;
+  font-size: 14px;
+  cursor: pointer;
 }
 
-#response {
+button:hover {
+  background-color: #0056b3;
+}
+
+#responseBox {
   margin-top: 20px;
-  font-weight: bold;
-  color: #333;
+  font-size: 16px;
 }
