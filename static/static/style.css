@@ -1,18 +1,21 @@
 body {
-  font-family: "Segoe UI", sans-serif;
-  background-color: #f2f4f8;
+  font-family: 'Segoe UI', sans-serif;
+  background-color: #f4f6f9;
   margin: 0;
   padding: 0;
-  color: #333;
+  display: flex;
+  justify-content: center;
+  min-height: 100vh;
 }
 
 .chat-container {
-  max-width: 600px;
-  margin: 50px auto;
-  padding: 20px;
   background: #fff;
+  padding: 20px;
+  max-width: 500px;
+  width: 95%;
+  margin-top: 30px;
   border-radius: 12px;
-  box-shadow: 0 6px 12px rgba(0, 0, 0, 0.08);
+  box-shadow: 0 6px 15px rgba(0, 0, 0, 0.1);
 }
 
 h1 {
@@ -21,76 +24,75 @@ h1 {
   margin-bottom: 20px;
 }
 
-form {
-  margin-top: 20px;
+#chatLog {
+  background: #f1f1f1;
+  border-radius: 8px;
+  padding: 10px;
+  height: 300px;
+  overflow-y: auto;
+  margin-bottom: 20px;
 }
 
-textarea#query {
+.chat-log .qa {
+  background-color: #e8f0fe;
+  padding: 10px;
+  border-radius: 6px;
+  margin-bottom: 10px;
+}
+
+.chat-log .qa:nth-child(even) {
+  background-color: #d2f0e8;
+}
+
+#askForm textarea {
   width: 100%;
-  height: 80px;
-  border: 1px solid #ccc;
-  border-radius: 8px;
   padding: 10px;
   font-size: 16px;
   resize: vertical;
+  min-height: 80px;
+  border: 1px solid #ccc;
+  border-radius: 8px;
   margin-bottom: 10px;
 }
 
 .controls {
   display: flex;
-  justify-content: space-between;
-  align-items: center;
+  gap: 10px;
   flex-wrap: wrap;
+  justify-content: space-between;
 }
 
 .controls button,
-.controls input[type="file"] {
-  margin: 5px 0;
+.controls input[type="file"],
+button {
+  flex: 1 1 auto;
+  font-size: 16px;
+  padding: 10px;
+  border: none;
+  border-radius: 8px;
+  cursor: pointer;
 }
 
-button {
-  background-color: #0066cc;
+.controls button {
+  background-color: #007bff;
   color: white;
-  padding: 8px 14px;
-  border: none;
-  border-radius: 6px;
-  cursor: pointer;
-  font-weight: 600;
-  transition: background-color 0.2s;
 }
 
 button:hover {
-  background-color: #004eaa;
+  opacity: 0.9;
 }
 
-#chatLog {
-  max-height: 400px;
-  overflow-y: auto;
-  margin-bottom: 20px;
+button:disabled {
+  background-color: #aaa;
+  cursor: not-allowed;
 }
 
-.qa {
-  background: #f9f9f9;
-  border-left: 4px solid #0066cc;
-  padding: 10px 12px;
-  margin-bottom: 12px;
-  border-radius: 8px;
-}
-
-.qa b {
-  display: block;
-  margin-bottom: 4px;
-  color: #333;
-}
-
-@media screen and (max-width: 600px) {
+@media (max-width: 480px) {
   .controls {
     flex-direction: column;
-    align-items: stretch;
   }
 
-  button,
-  input[type="file"] {
-    width: 100%;
+  #chatLog {
+    height: 250px;
   }
 }
