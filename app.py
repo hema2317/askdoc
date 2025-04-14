@@ -10,18 +10,24 @@ app.config['UPLOAD_FOLDER'] = 'uploads'
 def index():
     return render_template('index.html')
 
+from flask import Flask, request, jsonify, render_template
+from flask_cors import CORS
+
+app = Flask(__name__)
+CORS(app)
+
+@app.route("/")
+def home():
+    return render_template("index.html")
+
 @app.route("/ask", methods=["POST"])
 def ask():
-    query = request.form.get("query", "")
-    file = request.files.get("file")
-
-    print("User Query:", query)
-    if file:
-        print("File uploaded:", file.filename)
-
-    # Simulate AI logic
-    response_text = f"You asked: {query or '[File Only]'} (Pretend AI answer here)"
-    return jsonify({"response": response_text})
+    if request.is_json:
+        data = request.get_json()
+        question = data.get("query", "")
+        return jsonify({"response": f"🧠 AskDoc: You asked: {question} (Pretend AI answer here)"})
+    else:
+        return jsonify({"error": "Invalid input, must be JSON"}), 400
 
 if __name__ == '__main__':
     app.run(debug=True)
