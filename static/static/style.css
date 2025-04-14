@@ -1,45 +1,96 @@
 body {
-  font-family: Arial, sans-serif;
-  background: #f1f5f9;
+  font-family: "Segoe UI", sans-serif;
+  background-color: #f2f4f8;
   margin: 0;
-  padding: 20px;
+  padding: 0;
+  color: #333;
 }
 
 .chat-container {
   max-width: 600px;
-  margin: auto;
-  background: #fff;
+  margin: 50px auto;
   padding: 20px;
+  background: #fff;
   border-radius: 12px;
+  box-shadow: 0 6px 12px rgba(0, 0, 0, 0.08);
 }
 
-.chat-log {
+h1 {
+  text-align: center;
+  color: #0066cc;
+  margin-bottom: 20px;
+}
+
+form {
+  margin-top: 20px;
+}
+
+textarea#query {
+  width: 100%;
+  height: 80px;
+  border: 1px solid #ccc;
+  border-radius: 8px;
+  padding: 10px;
+  font-size: 16px;
+  resize: vertical;
+  margin-bottom: 10px;
+}
+
+.controls {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+.controls button,
+.controls input[type="file"] {
+  margin: 5px 0;
+}
+
+button {
+  background-color: #0066cc;
+  color: white;
+  padding: 8px 14px;
+  border: none;
+  border-radius: 6px;
+  cursor: pointer;
+  font-weight: 600;
+  transition: background-color 0.2s;
+}
+
+button:hover {
+  background-color: #004eaa;
+}
+
+#chatLog {
   max-height: 400px;
   overflow-y: auto;
   margin-bottom: 20px;
 }
 
 .qa {
-  background: #eef;
+  background: #f9f9f9;
+  border-left: 4px solid #0066cc;
+  padding: 10px 12px;
+  margin-bottom: 12px;
   border-radius: 8px;
-  padding: 10px;
-  margin-bottom: 10px;
 }
 
-.qa strong {
+.qa b {
   display: block;
+  margin-bottom: 4px;
+  color: #333;
 }
 
-textarea {
-  width: 100%;
-  height: 60px;
-  resize: none;
-  padding: 10px;
-  font-size: 1em;
-  margin-bottom: 10px;
-}
+@media screen and (max-width: 600px) {
+  .controls {
+    flex-direction: column;
+    align-items: stretch;
+  }
 
-.controls {
-  display: flex;
-  gap: 10px;
+  button,
+  input[type="file"] {
+    width: 100%;
+  }
 }
