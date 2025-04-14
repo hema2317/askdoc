@@ -10,17 +10,18 @@ app.config['UPLOAD_FOLDER'] = 'uploads'
 def index():
     return render_template('index.html')
 
-@app.route('/ask', methods=['POST'])
+@app.route("/ask", methods=["POST"])
 def ask():
-    user_input = request.form.get('query')
-    file = request.files.get('file')
+    query = request.form.get("query", "")
+    file = request.files.get("file")
 
+    print("User Query:", query)
     if file:
-        file.save(os.path.join(app.config['UPLOAD_FOLDER'], file.filename))
+        print("File uploaded:", file.filename)
 
-    # Fake AI answer
-    response = f"🧠 You asked: {user_input or '(via file)'} (Pretend AI answer here)"
-    return jsonify({'response': response})
+    # Simulate AI logic
+    response_text = f"You asked: {query or '[File Only]'} (Pretend AI answer here)"
+    return jsonify({"response": response_text})
 
 if __name__ == '__main__':
     app.run(debug=True)
