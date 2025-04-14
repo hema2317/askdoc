@@ -1,0 +1,6 @@
+{
+  "language": "python",
+  "entry": "app.py",
+  "build": "pip install -r requirements.txt",
+  "start": "gunicorn app:app"
+}
