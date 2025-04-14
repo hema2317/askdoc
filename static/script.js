@@ -1,75 +1,93 @@
+// static/script.js
 
-// Wait for DOM to load
 document.addEventListener("DOMContentLoaded", function () {
   const form = document.getElementById("askForm");
-  const responseBox = document.getElementById("responseBox");
   const chatLog = document.getElementById("chatLog");
+  const queryInput = document.getElementById("query");
 
-  // Submit health query
   form.addEventListener("submit", async function (e) {
     e.preventDefault();
-    const query = document.getElementById("query").value;
+    const query = queryInput.value.trim();
     const file = document.getElementById("file").files[0];
+
+    if (!query) return;
+
+    addMessage("user", query);
+    queryInput.value = "";
+
     const formData = new FormData();
     formData.append("query", query);
     if (file) formData.append("file", file);
 
-    chatLog.innerHTML += `<div class='user-msg'><b>You:</b> ${query}</div>`;
-    chatLog.innerHTML += `<div class='ai-msg'><b>AskDoc:</b> 🧠 Thinking...</div>`;
+    addMessage("ai", "🧠 Thinking...");
 
     try {
       const response = await fetch("/ask", {
         method: "POST",
         body: formData
       });
-
       const data = await response.json();
-      chatLog.lastElementChild.innerHTML = `<b>AskDoc:</b> ${data.response}`;
+      updateLastMessage("ai", data.response);
       fetchChatLog();
     } catch (err) {
-      chatLog.lastElementChild.innerHTML = `<b>AskDoc:</b> ❌ Failed to get response.`;
+      updateLastMessage("ai", "❌ Failed to get a response.");
     }
   });
 
-  // Voice input handler
   window.startListening = function () {
     if (!("webkitSpeechRecognition" in window)) {
       alert("Voice recognition not supported");
       return;
     }
+
     const recognition = new webkitSpeechRecognition();
     recognition.lang = "en-US";
     recognition.continuous = false;
     recognition.interimResults = false;
+
     recognition.onresult = function (event) {
       const transcript = event.results[0][0].transcript;
-      document.getElementById("query").value = transcript;
+      queryInput.value = transcript;
     };
+
     recognition.onerror = function (event) {
       alert("Voice recognition error: " + event.error);
     };
+
     recognition.start();
   };
 
-  // Load chat history from server
+  function addMessage(role, text) {
+    const bubble = document.createElement("div");
+    bubble.className = `bubble ${role}`;
+    bubble.innerHTML = `<b>${role === "user" ? "You" : "AskDoc"}:</b> ${text}`;
+    chatLog.appendChild(bubble);
+    chatLog.scrollTop = chatLog.scrollHeight;
+  }
+
+  function updateLastMessage(role, newText) {
+    const bubbles = chatLog.querySelectorAll(`.bubble.${role}`);
+    const lastBubble = bubbles[bubbles.length - 1];
+    if (lastBubble) lastBubble.innerHTML = `<b>${role === "user" ? "You" : "AskDoc"}:</b> ${newText}`;
+  }
+
   async function fetchChatLog() {
     try {
       const res = await fetch("/history");
       const log = await res.json();
       chatLog.innerHTML = "";
-      log.forEach((item, i) => {
-        chatLog.innerHTML += `<div class='user-msg'><b>You:</b> ${item.q}</div>`;
-        chatLog.innerHTML += `<div class='ai-msg'><b>AskDoc:</b> ${item.a}</div>`;
+      log.forEach(item => {
+        addMessage("user", item.q);
+        addMessage("ai", item.a);
       });
     } catch (e) {
-      chatLog.innerHTML = "<div class='ai-msg'>❌ Failed to load chat history.</div>";
+      console.error("Failed to load chat history");
     }
   }
 
-  // Trigger download
   window.downloadPDF = function () {
     window.location.href = "/download";
   };
 
-  fetchChatLog(); // Load history on startup
+  fetchChatLog();
 });
