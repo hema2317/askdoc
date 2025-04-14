@@ -4,20 +4,25 @@
   <meta charset="UTF-8">
   <title>AskDoc</title>
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <link rel="stylesheet" href="/static/style.css">
+  <!-- ✅ Use url_for to load CSS via Flask -->
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
 </head>
 <body>
   <div class="container">
     <h1>🩺 AskDoc</h1>
-    <form id="askForm">
+
+    <form id="askForm" enctype="multipart/form-data">
       <textarea name="query" id="query" rows="4" placeholder="Ask a health question..."></textarea>
+      <br />
       <button type="button" onclick="startListening()">🎤 Voice</button>
-      <input type="file" name="file" id="file" />
+      <input type="file" name="file" id="file">
       <button type="submit">Ask</button>
-      <div id="responseBox" style="margin-top:20px; font-size:16px;"></div>
     </form>
-    <div id="response"></div>
+
+    <div id="responseBox" style="margin-top:20px; font-size:16px;"></div>
   </div>
-  <script src="/static/script.js"></script>
+
+  <!-- ✅ Make sure this JS file has startListening + form submission -->
+  <script src="{{ url_for('static', filename='script.js') }}"></script>
 </body>
 </html>
