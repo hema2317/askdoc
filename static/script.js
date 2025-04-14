@@ -1,60 +1,67 @@
 document.addEventListener("DOMContentLoaded", function () {
   const form = document.getElementById("askForm");
   const responseBox = document.getElementById("responseBox");
+  const chatLog = document.getElementById("chatLog");
 
-  if (form) {
-    form.addEventListener("submit", async function (e) {
-      e.preventDefault();
-      const query = document.getElementById("query").value.trim();
-      const file = document.getElementById("file").files[0];
-      const formData = new FormData();
+  form.addEventListener("submit", async function (e) {
+    e.preventDefault();
+    const query = document.getElementById("query").value;
+    const file = document.getElementById("file").files[0];
+    const formData = new FormData();
+    formData.append("query", query);
+    if (file) formData.append("file", file);
 
-      if (!query && !file) {
-        responseBox.innerHTML = "❗Please enter a question or upload a file.";
-        return;
-      }
+    responseBox.innerHTML = "🧠 Thinking...";
 
-      formData.append("query", query);
-      if (file) formData.append("file", file);
+    try {
+      const response = await fetch("/ask", {
+        method: "POST",
+        body: formData
+      });
 
-      responseBox.innerHTML = "🧠 Thinking...";
+      const data = await response.json();
+      responseBox.innerHTML = `<b>🩺 AskDoc:</b> ${data.response}`;
 
-      try {
-        const response = await fetch("/ask", {
-          method: "POST",
-          body: formData
-        });
+      await fetchChatLog();
+    } catch (err) {
+      responseBox.innerHTML = "❌ Failed to get a response.";
+    }
+  });
 
-        const result = await response.json();
-        responseBox.innerHTML = `<b>🩺 AskDoc:</b> ${result.response || "No response received."}`;
-      } catch (err) {
-        responseBox.innerHTML = "❌ Something went wrong. Please try again.";
-        console.error("Fetch error:", err);
-      }
-    });
-  }
-
-  // 🎤 Voice input
   window.startListening = function () {
     if (!("webkitSpeechRecognition" in window)) {
-      alert("Voice recognition not supported in this browser.");
+      alert("Voice recognition not supported");
       return;
     }
 
     const recognition = new webkitSpeechRecognition();
     recognition.lang = "en-US";
-    recognition.interimResults = false;
-    recognition.maxAlternatives = 1;
-
-    recognition.onresult = function (event) {
-      const transcript = event.results[0][0].transcript;
-      document.getElementById("query").value = transcript;
-    };
-
-    recognition.onerror = function (event) {
-      alert("Voice error: " + event.error);
-    };
-
     recognition.start();
+    recognition.onresult = function (event) {
+      document.getElementById("query").value = event.results[0][0].transcript;
+    };
   };
+
+  async function fetchChatLog() {
+    try {
+      const res = await fetch("/history");
+      const log = await res.json();
+      chatLog.innerHTML = "";
+      log.forEach((item, i) => {
+        chatLog.innerHTML += `
+          <div class="qa">
+            <b>Q${i + 1}:</b> ${item.q}<br/>
+            <b>A${i + 1}:</b> ${item.a}
+          </div>`;
+      });
+    } catch (e) {
+      chatLog.innerHTML = "Failed to load chat history.";
+    }
+  }
+
+  window.downloadPDF = function () {
+    window.location.href = "/download";
+  };
+
+  fetchChatLog(); // Load on first load
 });
