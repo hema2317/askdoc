@@ -1,77 +1,151 @@
-from flask import Flask, request, jsonify, render_template, send_file
-from flask_cors import CORS
-from openai import OpenAI
-from fpdf import FPDF
-import tempfile
-import os
+import React, { useState } from 'react';
+import {
+  StyleSheet,
+  Text,
+  View,
+  TextInput,
+  TouchableOpacity,
+  ScrollView,
+  SafeAreaView,
+  Platform,
+  KeyboardAvoidingView,
+  Alert,
+} from 'react-native';
+import * as DocumentPicker from 'expo-document-picker';
 
-app = Flask(__name__)
-CORS(app)
+export default function App() {
+  const [query, setQuery] = useState('');
+  const [chatHistory, setChatHistory] = useState([]);
 
-# Initialize OpenAI client
-client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))  # Set this in Render env
+  const handleAsk = () => {
+    if (!query.trim()) return;
+    const mockAnswer = `Pretend AI answer to: "${query}"`;
+    setChatHistory([...chatHistory, { q: query, a: mockAnswer }]);
+    setQuery('');
+  };
 
-# Store chat history in memory
-chat_history = []
+  const handleFilePick = async () => {
+    const result = await DocumentPicker.getDocumentAsync({});
+    if (result.type === 'success') {
+      Alert.alert('File Selected', result.name);
+    }
+  };
 
-@app.route("/")
-def index():
-    return render_template("index.html")
+  const handleVoiceInput = async () => {
+    try {
+      alert('🎤 Voice-to-text not implemented yet.');
+    } catch (error) {
+      console.error('Voice error:', error);
+    }
+  };
 
-@app.route("/ask", methods=["POST"])
-def ask():
-    query = request.form.get("query")
-    file = request.files.get("file")
+  return (
+    <SafeAreaView style={styles.container}>
+      <KeyboardAvoidingView
+        behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+        style={{ flex: 1 }}
+        keyboardVerticalOffset={80}
+      >
+        <Text style={styles.header}>🩺 AskDoc</Text>
 
-    if not query and not file:
-        return jsonify({"response": "❌ No question or file provided."}), 400
+        <ScrollView style={styles.chatLog} contentContainerStyle={{ paddingBottom: 80 }}>
+          {chatHistory.map((entry, index) => (
+            <View key={index} style={styles.message}>
+              <Text style={styles.question}>🧠 Q: <Text style={styles.bold}>{entry.q}</Text></Text>
+              <Text style={styles.answer}>💬 A: {entry.a}</Text>
+            </View>
+          ))}
+        </ScrollView>
 
-    file_content = ""
-    if file:
-        try:
-            file_content = file.read().decode("utf-8")
-        except Exception:
-            file_content = "[Error reading file]"
+        <View style={styles.inputArea}>
+          <TextInput
+            style={styles.input}
+            value={query}
+            onChangeText={setQuery}
+            placeholder="Ask a health question..."
+            multiline
+          />
+          <View style={styles.row}>
+            <TouchableOpacity onPress={handleVoiceInput} style={styles.button}>
+              <Text>🎙 Voice</Text>
+            </TouchableOpacity>
+            <TouchableOpacity onPress={handleFilePick} style={styles.button}>
+              <Text>📎 File</Text>
+            </TouchableOpacity>
+            <TouchableOpacity onPress={handleAsk} style={[styles.button, styles.askBtn]}>
+              <Text style={{ color: 'white' }}>Ask</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      </KeyboardAvoidingView>
+    </SafeAreaView>
+  );
+}
 
-    # Combine input
-    full_prompt = f"{query}\n\nAttached info:\n{file_content}" if file_content else query
-
-    try:
-        response = client.chat.completions.create(
-            model="gpt-3.5-turbo",
-            messages=[
-                {"role": "system", "content": "You are a helpful health assistant. Keep it simple and useful."},
-                {"role": "user", "content": full_prompt}
-            ]
-        )
-        answer = response.choices[0].message.content.strip()
-        chat_history.append({"q": query, "a": answer})
-        return jsonify({"response": answer})
-    except Exception as e:
-        return jsonify({"response": f"⚠️ Error: {str(e)}"}), 500
-
-@app.route("/history", methods=["GET"])
-def history():
-    return jsonify(chat_history)
-
-@app.route("/download", methods=["GET"])
-def download_pdf():
-    if not chat_history:
-        return "No conversation found.", 400
-
-    pdf = FPDF()
-    pdf.add_page()
-    pdf.set_font("Arial", size=12)
-    pdf.cell(0, 10, "AskDoc Chat Summary", ln=True, align='C')
-    pdf.ln(10)
-
-    for i, item in enumerate(chat_history, 1):
-        pdf.multi_cell(0, 10, f"{i}. Q: {item['q']}\nA: {item['a']}\n")
-
-    tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".pdf")
-    pdf.output(tmp.name)
-    return send_file(tmp.name, as_attachment=True, download_name="AskDoc_Conversation.pdf")
-
-if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 10000))
-    app.run(host="0.0.0.0", port=port)
+const styles = StyleSheet.create({
+  container: {
+    flex: 1,
+    backgroundColor: '#eaf6ff',
+    paddingHorizontal: 16,
+  },
+  header: {
+    fontSize: 28,
+    fontWeight: 'bold',
+    textAlign: 'center',
+    marginVertical: 16,
+    color: '#0084ff',
+  },
+  chatLog: {
+    flex: 1,
+    marginBottom: 8,
+  },
+  message: {
+    marginBottom: 16,
+    padding: 12,
+    backgroundColor: '#fff',
+    borderRadius: 12,
+    shadowColor: '#000',
+    shadowOpacity: 0.1,
+    shadowRadius: 5,
+    elevation: 2,
+  },
+  question: {
+    fontSize: 16,
+    marginBottom: 4,
+  },
+  answer: {
+    fontSize: 15,
+    color: '#333',
+  },
+  bold: {
+    fontWeight: 'bold',
+  },
+  inputArea: {
+    paddingVertical: 12,
+  },
+  input: {
+    backgroundColor: '#fff',
+    padding: 12,
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: '#ccc',
+    fontSize: 16,
+    marginBottom: 8,
+    minHeight: 60,
+  },
+  row: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    gap: 10,
+  },
+  button: {
+    flex: 1,
+    padding: 10,
+    backgroundColor: '#e6f0f7',
+    borderRadius: 8,
+    alignItems: 'center',
+  },
+  askBtn: {
+    backgroundColor: '#0084ff',
+  },
+});
