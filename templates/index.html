@@ -1,31 +1,58 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-  <meta charset="UTF-8">
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>AskDoc</title>
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <!-- ✅ Use url_for to load CSS via Flask -->
-  <!-- inside <head> -->
-<link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
-<!-- at end of body -->
-<script src="{{ url_for('static', filename='script.js') }}"></script>
+  <style>
+    body {
+      font-family: Arial, sans-serif;
+      padding: 20px;
+      background: #f0f4f8;
+      color: #222;
+      max-width: 600px;
+      margin: auto;
+    }
+    h1 {
+      text-align: center;
+      color: #1d3557;
+    }
+    textarea, input[type="file"], button {
+      width: 100%;
+      margin: 10px 0;
+      font-size: 16px;
+    }
+    #responseBox {
+      background: #fff;
+      padding: 15px;
+      border-radius: 8px;
+      margin-top: 20px;
+      white-space: pre-wrap;
+    }
+    #chatLog {
+      margin-top: 20px;
+    }
+    .qa {
+      margin-bottom: 10px;
+      background: #e3f2fd;
+      padding: 10px;
+      border-radius: 5px;
+    }
+  </style>
 </head>
 <body>
-  <div class="container">
-    <h1>🩺 AskDoc</h1>
+  <h1>🩺 AskDoc</h1>
+  <form id="askForm">
+    <textarea id="query" rows="4" placeholder="Ask a health question..."></textarea>
+    <button type="button" onclick="startListening()">🎤 Voice</button>
+    <input type="file" id="file" />
+    <button type="submit">Ask</button>
+    <button type="button" onclick="downloadPDF()">⬇️ Download Q&A</button>
+  </form>
 
-    <form id="askForm" enctype="multipart/form-data">
-      <textarea name="query" id="query" rows="4" placeholder="Ask a health question..."></textarea>
-      <br />
-      <button type="button" onclick="startListening()">🎤 Voice</button>
-      <input type="file" name="file" id="file">
-      <button type="submit">Ask</button>
-    </form>
+  <div id="responseBox"></div>
+  <div id="chatLog"></div>
 
-    <div id="responseBox" style="margin-top:20px; font-size:16px;"></div>
-  </div>
-
-  <!-- ✅ Make sure this JS file has startListening + form submission -->
-  <script src="{{ url_for('static', filename='script.js') }}"></script>
+  <script src="/static/script.js"></script>
 </body>
 </html>
