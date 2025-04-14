@@ -1,77 +1,70 @@
 document.addEventListener("DOMContentLoaded", function () {
   const form = document.getElementById("askForm");
-  const responseBox = document.getElementById("responseBox");
+  const queryInput = document.getElementById("query");
   const chatLog = document.getElementById("chatLog");
 
   form.addEventListener("submit", async function (e) {
     e.preventDefault();
-    const query = document.getElementById("query").value;
+    const query = queryInput.value.trim();
     const file = document.getElementById("file").files[0];
+    if (!query) return;
+
     const formData = new FormData();
     formData.append("query", query);
     if (file) formData.append("file", file);
 
-    responseBox.innerHTML = "🧠 Thinking...";
+    appendQA("You", query); // Show user question
+    queryInput.value = "";
 
     try {
       const response = await fetch("/ask", {
         method: "POST",
         body: formData
       });
-
       const data = await response.json();
-      responseBox.innerHTML = `<b>🩺 AskDoc:</b> ${data.response}`;
-
-      await fetchChatLog();
-    } catch (err) {
-      responseBox.innerHTML = "❌ Failed to get a response.";
+      appendQA("AskDoc", data.response || "No response");
+    } catch {
+      appendQA("AskDoc", "❌ Error getting response");
     }
+
+    loadHistory();
   });
 
-window.startListening = function () {
-  if (!("webkitSpeechRecognition" in window)) {
-    alert("Voice recognition not supported");
-    return;
+  function appendQA(role, text) {
+    const div = document.createElement("div");
+    div.className = "qa";
+    div.innerHTML = `<strong>${role}:</strong> ${text}`;
+    chatLog.appendChild(div);
+    chatLog.scrollTop = chatLog.scrollHeight;
   }
 
-  const recognition = new webkitSpeechRecognition();
-  recognition.lang = "en-US";
-  recognition.continuous = false;
-  recognition.interimResults = false;
+  async function loadHistory() {
+    const res = await fetch("/history");
+    const data = await res.json();
+    chatLog.innerHTML = "";
+    data.forEach(entry => {
+      appendQA("You", entry.q);
+      appendQA("AskDoc", entry.a);
+    });
+  }
 
-  recognition.onresult = function (event) {
-    const transcript = event.results[0][0].transcript;
-    document.getElementById("query").value = transcript;
-  };
+  window.downloadPDF = () => window.location.href = "/download";
 
-  recognition.onerror = function (event) {
-    alert("Voice recognition error: " + event.error);
-  };
-
-  recognition.start();
-};
-
-
-  async function fetchChatLog() {
-    try {
-      const res = await fetch("/history");
-      const log = await res.json();
-      chatLog.innerHTML = "";
-      log.forEach((item, i) => {
-        chatLog.innerHTML += `
-          <div class="qa">
-            <b>Q${i + 1}:</b> ${item.q}<br/>
-            <b>A${i + 1}:</b> ${item.a}
-          </div>`;
-      });
-    } catch (e) {
-      chatLog.innerHTML = "Failed to load chat history.";
+  window.startListening = () => {
+    if (!("webkitSpeechRecognition" in window)) {
+      alert("Speech not supported");
+      return;
     }
-  }
 
-  window.downloadPDF = function () {
-    window.location.href = "/download";
+    const recognition = new webkitSpeechRecognition();
+    recognition.lang = "en-US";
+    recognition.continuous = false;
+    recognition.onresult = e => {
+      queryInput.value = e.results[0][0].transcript;
+    };
+    recognition.onerror = e => alert("Voice error: " + e.error);
+    recognition.start();
   };
 
-  fetchChatLog(); // Load on first load
+  loadHistory();
 });
