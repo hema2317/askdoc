@@ -28,19 +28,29 @@ document.addEventListener("DOMContentLoaded", function () {
     }
   });
 
-  window.startListening = function () {
-    if (!("webkitSpeechRecognition" in window)) {
-      alert("Voice recognition not supported");
-      return;
-    }
+window.startListening = function () {
+  if (!("webkitSpeechRecognition" in window)) {
+    alert("Voice recognition not supported");
+    return;
+  }
 
-    const recognition = new webkitSpeechRecognition();
-    recognition.lang = "en-US";
-    recognition.start();
-    recognition.onresult = function (event) {
-      document.getElementById("query").value = event.results[0][0].transcript;
-    };
+  const recognition = new webkitSpeechRecognition();
+  recognition.lang = "en-US";
+  recognition.continuous = false;
+  recognition.interimResults = false;
+
+  recognition.onresult = function (event) {
+    const transcript = event.results[0][0].transcript;
+    document.getElementById("query").value = transcript;
   };
+
+  recognition.onerror = function (event) {
+    alert("Voice recognition error: " + event.error);
+  };
+
+  recognition.start();
+};
+
 
   async function fetchChatLog() {
     try {
