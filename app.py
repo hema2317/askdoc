@@ -101,56 +101,122 @@ def authenticate():
 @token_required
 def ask_question(current_user):
     data = request.json
-    query = data.get('query', '')
+    query = data.get('query', '').strip()
     
+    # Validate input
     if not query:
-        return jsonify({"error": "No query provided"}), 400
+        return jsonify({"error": "Please describe your symptoms"}), 400
+    if len(query) > 1000:
+        return jsonify({"error": "Query too long (max 1000 characters)"}), 400
 
     try:
-        # Medical context prompt
-        prompt = f"""As a medical professional, analyze this query:
-        
+        # Build detailed medical prompt
+        prompt = f"""As a senior medical professional, analyze these symptoms with caution:
+
 Patient Profile:
-- Age: {users_db[current_user]['profile']['age']}
-- Gender: {users_db[current_user]['profile']['gender']}
-- Medical History: {users_db[current_user]['profile']['medical_history']}
-- Medications: {users_db[current_user]['profile']['medications']}
+- Age: {users_db[current_user]['profile'].get('age', 'Not specified')}
+- Gender: {users_db[current_user]['profile'].get('gender', 'Not specified')}
+- Medical History: {users_db[current_user]['profile'].get('medical_history', 'None')}
+- Medications: {users_db[current_user]['profile'].get('medications', 'None')}
 
-Query: "{query}"
+Symptoms: "{query}"
 
-Provide:
-1. Possible conditions (ranked by likelihood)
-2. Recommended actions
-3. Warning signs to watch for
-4. When to seek emergency care
-5. Recommended specialist type
-6. Brief 2-line doctor summary
+Provide a structured response in valid JSON format ONLY:
+{{
+  "conditions": ["list possible conditions by likelihood"],
+  "actions": ["list recommended actions"],
+  "warnings": ["list warning signs"],
+  "emergency": "when to seek immediate care",
+  "specialist": "recommended specialist type",
+  "summary": "2-line doctor briefing"
+}}
 
-Format as JSON with these keys:
-conditions, actions, warnings, emergency, specialist, doctor_summary"""
+Guidelines:
+1. Prioritize patient safety
+2. Flag urgent conditions first
+3. Suggest conservative measures
+4. Always recommend professional consultation"""
 
-        response = openai.ChatCompletion.create(
-            model="gpt-4",
-            messages=[{"role": "user", "content": prompt}],
-            temperature=0.3,
-            max_tokens=1000
-        )
+        # Call OpenAI with timeout and retry
+        try:
+            response = openai.ChatCompletion.create(
+                model="gpt-4",
+                messages=[{"role": "user", "content": prompt}],
+                temperature=0.3,
+                max_tokens=1000,
+                request_timeout=15  # 15-second timeout
+            )
+        except openai.error.Timeout:
+            logging.warning("OpenAI timeout - retrying...")
+            response = openai.ChatCompletion.create(
+                model="gpt-3.5-turbo",  # Fallback model
+                messages=[{"role": "user", "content": prompt}],
+                temperature=0.3,
+                max_tokens=800
+            )
 
-        answer = response.choices[0].message.content.strip()
+        # Validate response structure
+        if not response.choices:
+            raise ValueError("No response from AI model")
         
-        # Store in conversation history
+        raw_answer = response.choices[0].message.content.strip()
+        
+        try:
+            answer = json.loads(raw_answer)
+            
+            # Validate required fields
+            required_fields = ['conditions', 'actions', 'warnings', 
+                              'emergency', 'specialist', 'summary']
+            for field in required_fields:
+                if field not in answer:
+                    raise ValueError(f"Missing field: {field}")
+                
+            # Type checking
+            if not isinstance(answer['conditions'], list):
+                raise ValueError("Conditions must be a list")
+                
+        except (json.JSONDecodeError, ValueError) as e:
+            logging.error(f"Response parsing failed: {str(e)}")
+            # Fallback to simple text response if JSON parsing fails
+            answer = {
+                "conditions": ["Consultation needed"],
+                "actions": ["Schedule a doctor's appointment"],
+                "warnings": ["Watch for worsening symptoms"],
+                "emergency": "Seek help if severe pain or difficulty breathing",
+                "specialist": "General Practitioner",
+                "summary": "Patient requires professional medical evaluation"
+            }
+
+        # Store conversation
         conversation = {
             "timestamp": datetime.now().isoformat(),
             "query": query,
-            "response": answer
+            "response": answer,
+            "raw_response": raw_answer  # Store original for debugging
         }
         users_db[current_user]['conversations'].append(conversation)
 
-        return jsonify({"response": answer})
+        return jsonify(answer)
 
+    except openai.error.AuthenticationError:
+        logging.critical("Invalid OpenAI API key")
+        return jsonify({"error": "System error - please try again later"}), 500
+    except openai.error.RateLimitError:
+        logging.error("OpenAI rate limit exceeded")
+        return jsonify({"error": "System busy - please try again soon"}), 429
     except Exception as e:
-        logging.error(f"AI Error: {str(e)}")
-        return jsonify({"error": "AI processing failed"}), 500
+        logging.error(f"Unexpected error: {str(e)}", exc_info=True)
+        return jsonify({
+            "error": "Our medical assistant is unavailable",
+            "fallback": {
+                "conditions": ["Consultation recommended"],
+                "actions": ["Rest and monitor symptoms"],
+                "warnings": ["Seek help if symptoms worsen"],
+                "emergency": "Call emergency services for severe symptoms",
+                "specialist": "Primary Care Physician",
+                "summary": "Patient should consult a healthcare provider"
+            }
+        }), 500
 
 @app.route('/api/history', methods=['GET'])
 @token_required
