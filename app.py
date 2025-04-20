@@ -1,4 +1,5 @@
 import os
+import json
 from datetime import datetime, timedelta
 from flask import Flask, request, jsonify, send_file, make_response
 from flask_cors import CORS
@@ -27,13 +28,12 @@ app.config.update({
     'GOOGLE_API_KEY': os.getenv('GOOGLE_API_KEY'),
     'UPLOAD_FOLDER': 'uploads/',
     'ALLOWED_EXTENSIONS': {'png', 'jpg', 'jpeg', 'gif'},
-    'MAX_CONTENT_LENGTH': 16 * 1024 * 1024  # 16MB
+    'MAX_CONTENT_LENGTH': 16 * 1024 * 1024
 })
 
 # Initialize OpenAI
 openai.api_key = app.config['OPENAI_API_KEY']
 
-# Database simulation (replace with real DB in production)
 users_db = {
     "user1": {
         "password": "pass123",
@@ -49,17 +49,11 @@ users_db = {
 
 doctor_cache = {}
 
-# Helper Functions
 def allowed_file(filename):
-    return '.' in filename and \
-           filename.rsplit('.', 1)[1].lower() in app.config['ALLOWED_EXTENSIONS']
+    return '.' in filename and filename.rsplit('.', 1)[1].lower() in app.config['ALLOWED_EXTENSIONS']
 
 def generate_token(user_id):
-    return jwt.encode(
-        {'user_id': user_id, 'exp': datetime.utcnow() + timedelta(hours=24)},
-        app.config['SECRET_KEY'],
-        algorithm='HS256'
-    )
+    return jwt.encode({'user_id': user_id, 'exp': datetime.utcnow() + timedelta(hours=24)}, app.config['SECRET_KEY'], algorithm='HS256')
 
 def token_required(f):
     @wraps(f)
@@ -67,29 +61,28 @@ def token_required(f):
         token = request.headers.get('Authorization')
         if not token:
             return jsonify({"error": "Token is missing"}), 401
-        
+
         try:
             data = jwt.decode(token.split()[1], app.config['SECRET_KEY'], algorithms=["HS256"])
             current_user = data['user_id']
         except Exception as e:
             return jsonify({"error": "Invalid token"}), 401
-            
+
         return f(current_user, *args, **kwargs)
     return decorated
 
-# Routes
 @app.route('/api/auth', methods=['POST'])
 def authenticate():
     data = request.json
     username = data.get('username')
     password = data.get('password')
-    
+
     if not username or not password:
         return jsonify({"error": "Missing credentials"}), 400
-    
+
     if username not in users_db or users_db[username]['password'] != password:
         return jsonify({"error": "Invalid credentials"}), 401
-    
+
     token = generate_token(username)
     return jsonify({
         "token": token,
@@ -102,15 +95,13 @@ def authenticate():
 def ask_question(current_user):
     data = request.json
     query = data.get('query', '').strip()
-    
-    # Validate input
+
     if not query:
         return jsonify({"error": "Please describe your symptoms"}), 400
     if len(query) > 1000:
         return jsonify({"error": "Query too long (max 1000 characters)"}), 400
 
     try:
-        # Build detailed medical prompt
         prompt = f"""As a senior medical professional, analyze these symptoms with caution:
 
 Patient Profile:
@@ -119,7 +110,7 @@ Patient Profile:
 - Medical History: {users_db[current_user]['profile'].get('medical_history', 'None')}
 - Medications: {users_db[current_user]['profile'].get('medications', 'None')}
 
-Symptoms: "{query}"
+Symptoms: \"{query}\"
 
 Provide a structured response in valid JSON format ONLY:
 {{
@@ -129,57 +120,22 @@ Provide a structured response in valid JSON format ONLY:
   "emergency": "when to seek immediate care",
   "specialist": "recommended specialist type",
   "summary": "2-line doctor briefing"
-}}
+}}"""
 
-Guidelines:
-1. Prioritize patient safety
-2. Flag urgent conditions first
-3. Suggest conservative measures
-4. Always recommend professional consultation"""
+        response = openai.ChatCompletion.create(
+            model="gpt-4",
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.3,
+            max_tokens=1000
+        )
 
-        # Call OpenAI with timeout and retry
-        try:
-            response = openai.ChatCompletion.create(
-                model="gpt-4",
-                messages=[{"role": "user", "content": prompt}],
-                temperature=0.3,
-                max_tokens=1000,
-                request_timeout=15  # 15-second timeout
-            )
-        except openai.error.Timeout:
-            logging.warning("OpenAI timeout - retrying...")
-            response = openai.ChatCompletion.create(
-                model="gpt-3.5-turbo",  # Fallback model
-                messages=[{"role": "user", "content": prompt}],
-                temperature=0.3,
-                max_tokens=800
-            )
-
-        # Validate response structure
-        if not response.choices:
-            raise ValueError("No response from AI model")
-        
         raw_answer = response.choices[0].message.content.strip()
-        
+
         try:
             answer = json.loads(raw_answer)
-            
-            # Validate required fields
-            required_fields = ['conditions', 'actions', 'warnings', 
-                              'emergency', 'specialist', 'summary']
-            for field in required_fields:
-                if field not in answer:
-                    raise ValueError(f"Missing field: {field}")
-                
-            # Type checking
-            if not isinstance(answer['conditions'], list):
-                raise ValueError("Conditions must be a list")
-                
-        except (json.JSONDecodeError, ValueError) as e:
-            logging.error(f"Response parsing failed: {str(e)}")
-            # Fallback to simple text response if JSON parsing fails
+        except json.JSONDecodeError:
             answer = {
-                "conditions": ["Consultation needed"],
+                "conditions": ["Consultation recommended"],
                 "actions": ["Schedule a doctor's appointment"],
                 "warnings": ["Watch for worsening symptoms"],
                 "emergency": "Seek help if severe pain or difficulty breathing",
@@ -187,36 +143,19 @@ Guidelines:
                 "summary": "Patient requires professional medical evaluation"
             }
 
-        # Store conversation
         conversation = {
             "timestamp": datetime.now().isoformat(),
             "query": query,
             "response": answer,
-            "raw_response": raw_answer  # Store original for debugging
+            "raw_response": raw_answer
         }
         users_db[current_user]['conversations'].append(conversation)
 
         return jsonify(answer)
 
-    except openai.error.AuthenticationError:
-        logging.critical("Invalid OpenAI API key")
-        return jsonify({"error": "System error - please try again later"}), 500
-    except openai.error.RateLimitError:
-        logging.error("OpenAI rate limit exceeded")
-        return jsonify({"error": "System busy - please try again soon"}), 429
     except Exception as e:
-        logging.error(f"Unexpected error: {str(e)}", exc_info=True)
-        return jsonify({
-            "error": "Our medical assistant is unavailable",
-            "fallback": {
-                "conditions": ["Consultation recommended"],
-                "actions": ["Rest and monitor symptoms"],
-                "warnings": ["Seek help if symptoms worsen"],
-                "emergency": "Call emergency services for severe symptoms",
-                "specialist": "Primary Care Physician",
-                "summary": "Patient should consult a healthcare provider"
-            }
-        }), 500
+        logging.error(f"Unexpected error: {str(e)}")
+        return jsonify({"error": "AI processing failed"}), 500
 
 @app.route('/api/history', methods=['GET'])
 @token_required
@@ -227,29 +166,27 @@ def get_history(current_user):
 @token_required
 def find_doctors(current_user):
     data = request.json
-    location = data.get('location')  # {lat: x, lng: y}
+    location = data.get('location')
     specialty = data.get('specialty', '')
-    
+
     if not location or 'lat' not in location or 'lng' not in location:
         return jsonify({"error": "Invalid location"}), 400
 
     try:
-        # Check cache first
         cache_key = f"{location['lat']},{location['lng']},{specialty}"
         if cache_key in doctor_cache:
             cached_data = doctor_cache[cache_key]
-            if (datetime.now() - cached_data['timestamp']).seconds < 3600:  # 1 hour cache
+            if (datetime.now() - cached_data['timestamp']).seconds < 3600:
                 return jsonify(cached_data['data'])
-        
-        # Call Google Places API
+
         params = {
             'key': app.config['GOOGLE_API_KEY'],
             'location': f"{location['lat']},{location['lng']}",
-            'radius': 10000,  # ~6 miles
+            'radius': 10000,
             'type': 'doctor',
             'rankby': 'distance'
         }
-        
+
         if specialty:
             params['keyword'] = specialty + ' doctor'
 
@@ -261,15 +198,14 @@ def find_doctors(current_user):
 
         if places_data.get('status') != 'OK':
             return jsonify({"error": "Doctor search failed"}), 500
-        
-        # Process results
+
         doctors = []
-        for place in places_data.get('results', [])[:5]:  # Limit to 5 results
+        for place in places_data.get('results', [])[:5]:
             distance = geodesic(
                 (location['lat'], location['lng']),
                 (place['geometry']['location']['lat'], place['geometry']['location']['lng'])
             ).miles
-            
+
             doctors.append({
                 "id": place['place_id'],
                 "name": place.get('name'),
@@ -279,8 +215,7 @@ def find_doctors(current_user):
                 "location": place['geometry']['location'],
                 "specialties": [specialty] if specialty else []
             })
-        
-        # Cache results
+
         doctor_cache[cache_key] = {
             'data': {"doctors": doctors},
             'timestamp': datetime.now()
@@ -297,25 +232,21 @@ def find_doctors(current_user):
 def upload_file(current_user):
     if 'file' not in request.files:
         return jsonify({"error": "No file part"}), 400
-        
+
     file = request.files['file']
     if file.filename == '':
         return jsonify({"error": "No selected file"}), 400
-        
+
     if file and allowed_file(file.filename):
         filename = secure_filename(f"{current_user}_{datetime.now().timestamp()}.{file.filename.rsplit('.', 1)[1].lower()}")
         filepath = os.path.join(app.config['UPLOAD_FOLDER'], filename)
         file.save(filepath)
-        
-        # Here you would typically add image analysis logic
-        return jsonify({
-            "message": "File uploaded successfully",
-            "path": filepath
-        })
-    
+
+        return jsonify({"message": "File uploaded successfully", "path": filepath})
+
     return jsonify({"error": "Invalid file type"}), 400
 
-@app.route('/api/report', methods=['GET'])
+@app.route('/api/generate-report', methods=['POST'])
 @token_required
 def generate_report(current_user):
     conversations = users_db[current_user]['conversations']
@@ -326,35 +257,28 @@ def generate_report(current_user):
         pdf = FPDF()
         pdf.add_page()
         pdf.set_font("Arial", size=12)
-        
-        # Header
         pdf.cell(200, 10, txt="AskDoc Medical Report", ln=1, align='C')
         pdf.cell(200, 10, txt=f"Patient: {current_user}", ln=2, align='C')
         pdf.cell(200, 10, txt=f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M')}", ln=3, align='C')
         pdf.ln(15)
-        
-        # Content
+
         for i, conv in enumerate(conversations, 1):
             pdf.set_font("Arial", 'B', 12)
             pdf.multi_cell(0, 10, txt=f"Consultation {i} - {conv['timestamp'][:10]}", align='L')
             pdf.set_font("Arial", size=10)
-            
             pdf.multi_cell(0, 8, txt=f"Question: {conv['query']}", align='L')
-            
             try:
-                response = json.loads(conv['response'])
+                response = conv['response'] if isinstance(conv['response'], dict) else json.loads(conv['response'])
                 pdf.multi_cell(0, 8, txt=f"Conditions: {', '.join(response.get('conditions', []))}", align='L')
                 pdf.multi_cell(0, 8, txt=f"Actions:\n- " + '\n- '.join(response.get('actions', [])), align='L')
-                pdf.multi_cell(0, 8, txt=f"Doctor Summary: {response.get('doctor_summary', '')}", align='L')
+                pdf.multi_cell(0, 8, txt=f"Summary: {response.get('summary', '')}", align='L')
             except:
                 pdf.multi_cell(0, 8, txt=f"Response: {conv['response']}", align='L')
-            
             pdf.ln(10)
-        
-        # Save to temp file
+
         temp_file = tempfile.NamedTemporaryFile(delete=False, suffix='.pdf')
         pdf.output(temp_file.name)
-        
+
         return send_file(
             temp_file.name,
             as_attachment=True,
