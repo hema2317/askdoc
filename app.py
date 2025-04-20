@@ -43,5 +43,5 @@ def download_pdf():
     pdf.output(temp.name)
     return send_file(temp.name, as_attachment=True, download_name="AskDoc_Conversation.pdf")
 
-if __name__ == "__main__":
-    app.run(debug=True)
+app.run(host="0.0.0.0", port=5000)
+
