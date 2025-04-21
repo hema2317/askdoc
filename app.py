@@ -201,7 +201,6 @@ def find_doctors(current_user):
                 (place['geometry']['location']['lat'], place['geometry']['location']['lng'])
             ).miles
 
-            # To fetch phone number, call Place Details API
             place_id = place['place_id']
             phone = None
             try:
@@ -239,6 +238,7 @@ def find_doctors(current_user):
     except Exception as e:
         logging.error(f"Doctor search error: {str(e)}")
         return jsonify({"error": "Service unavailable"}), 503
+
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 5000))
     app.run(host='0.0.0.0', port=port)
