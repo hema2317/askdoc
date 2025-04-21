@@ -38,6 +38,8 @@ users_db = {
     }
 }
 
+known_meds = ['metformin', 'warfarin', 'tresiba', 'aspirin', 'tylenol', 'ibuprofen']
+
 def generate_token(user_id):
     return jwt.encode({'user_id': user_id, 'exp': datetime.utcnow() + timedelta(hours=24)}, app.config['SECRET_KEY'], algorithm='HS256')
 
@@ -81,13 +83,13 @@ def ask_question(current_user):
     if not query:
         return jsonify({"error": "Please describe your symptoms"}), 400
 
-    # Medication detection from input
-    words = query.lower().split()
-    possible_meds = [w for w in words if w[0].isalpha() and len(w) > 3]
+    found_meds = [med.capitalize() for med in known_meds if med in query.lower()]
+
     current_meds = users_db[current_user]['profile']['medications']
-    for med in possible_meds:
-        if med.capitalize() not in current_meds:
-            current_meds.append(med.capitalize())
+    for med in found_meds:
+        timestamped = f"{med} (added from chat at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')})"
+        if timestamped not in current_meds:
+            current_meds.append(timestamped)
 
     try:
         prompt = f"""As a senior medical professional, analyze these symptoms with caution:
@@ -96,7 +98,7 @@ Patient Profile:
 - Age: {users_db[current_user]['profile'].get('age', 'Not specified')}
 - Gender: {users_db[current_user]['profile'].get('gender', 'Not specified')}
 - Medical History: {users_db[current_user]['profile'].get('medical_history', 'None')}
-- Medications: {', '.join(users_db[current_user]['profile'].get('medications', [])) or 'None'}
+- Medications: {', '.join(current_meds) or 'None'}
 
 Symptoms: \"{query}\"
 
@@ -133,7 +135,8 @@ Provide a structured response in valid JSON format ONLY:
         entry = {
             "timestamp": datetime.now().isoformat(),
             "query": query,
-            "response": answer
+            "response": answer,
+            "detected_medications": found_meds
         }
         users_db[current_user]['conversations'].append(entry)
 
