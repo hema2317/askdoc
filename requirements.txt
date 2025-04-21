@@ -7,3 +7,4 @@ geopy==2.4.0
 PyJWT==2.8.0
 fpdf==1.7.2
 Werkzeug==2.2.3
+gunicorn
