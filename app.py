@@ -157,11 +157,6 @@ Provide a structured response in valid JSON format ONLY:
         logging.error(f"Unexpected error: {str(e)}")
         return jsonify({"error": "AI processing failed"}), 500
 
-@app.route('/api/history', methods=['GET'])
-@token_required
-def get_history(current_user):
-    return jsonify(users_db[current_user]['conversations'])
-
 @app.route('/api/doctors', methods=['POST'])
 @token_required
 def find_doctors(current_user):
@@ -213,7 +208,8 @@ def find_doctors(current_user):
                 "distance": round(distance, 1),
                 "rating": place.get('rating'),
                 "location": place['geometry']['location'],
-                "specialties": [specialty] if specialty else []
+                "specialties": [specialty] if specialty else [],
+                "phone": place.get('formatted_phone_number')  # now added
             })
 
         doctor_cache[cache_key] = {
@@ -226,73 +222,3 @@ def find_doctors(current_user):
     except Exception as e:
         logging.error(f"Doctor search error: {str(e)}")
         return jsonify({"error": "Service unavailable"}), 503
-
-@app.route('/api/upload', methods=['POST'])
-@token_required
-def upload_file(current_user):
-    if 'file' not in request.files:
-        return jsonify({"error": "No file part"}), 400
-
-    file = request.files['file']
-    if file.filename == '':
-        return jsonify({"error": "No selected file"}), 400
-
-    if file and allowed_file(file.filename):
-        filename = secure_filename(f"{current_user}_{datetime.now().timestamp()}.{file.filename.rsplit('.', 1)[1].lower()}")
-        filepath = os.path.join(app.config['UPLOAD_FOLDER'], filename)
-        file.save(filepath)
-
-        return jsonify({"message": "File uploaded successfully", "path": filepath})
-
-    return jsonify({"error": "Invalid file type"}), 400
-
-@app.route('/api/generate-report', methods=['POST'])
-@token_required
-def generate_report(current_user):
-    conversations = users_db[current_user]['conversations']
-    if not conversations:
-        return jsonify({"error": "No history available"}), 404
-
-    try:
-        pdf = FPDF()
-        pdf.add_page()
-        pdf.set_font("Arial", size=12)
-        pdf.cell(200, 10, txt="AskDoc Medical Report", ln=1, align='C')
-        pdf.cell(200, 10, txt=f"Patient: {current_user}", ln=2, align='C')
-        pdf.cell(200, 10, txt=f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M')}", ln=3, align='C')
-        pdf.ln(15)
-
-        for i, conv in enumerate(conversations, 1):
-            pdf.set_font("Arial", 'B', 12)
-            pdf.multi_cell(0, 10, txt=f"Consultation {i} - {conv['timestamp'][:10]}", align='L')
-            pdf.set_font("Arial", size=10)
-            pdf.multi_cell(0, 8, txt=f"Question: {conv['query']}", align='L')
-            try:
-                response = conv['response'] if isinstance(conv['response'], dict) else json.loads(conv['response'])
-                pdf.multi_cell(0, 8, txt=f"Conditions: {', '.join(response.get('conditions', []))}", align='L')
-                pdf.multi_cell(0, 8, txt=f"Actions:\n- " + '\n- '.join(response.get('actions', [])), align='L')
-                pdf.multi_cell(0, 8, txt=f"Summary: {response.get('summary', '')}", align='L')
-            except:
-                pdf.multi_cell(0, 8, txt=f"Response: {conv['response']}", align='L')
-            pdf.ln(10)
-
-        temp_file = tempfile.NamedTemporaryFile(delete=False, suffix='.pdf')
-        pdf.output(temp_file.name)
-
-        return send_file(
-            temp_file.name,
-            as_attachment=True,
-            download_name=f"AskDoc_Report_{current_user}_{datetime.now().strftime('%Y%m%d')}.pdf",
-            mimetype='application/pdf'
-        )
-    except Exception as e:
-        logging.error(f"Report generation error: {str(e)}")
-        return jsonify({"error": "Failed to generate report"}), 500
-
-@app.route('/')
-def home():
-    return "AskDoc API is running 🚀"
-
-if __name__ == '__main__':
-    os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)
-    app.run(host='0.0.0.0', port=5000, debug=True)
