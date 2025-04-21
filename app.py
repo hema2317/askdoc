@@ -19,11 +19,13 @@ CORS(app, resources={r"/api/*": {"origins": "*"}})
 app.config.update({
     'SECRET_KEY': os.getenv('FLASK_SECRET_KEY', 'your-secret-key-123'),
     'OPENAI_API_KEY': os.getenv('OPENAI_API_KEY'),
-    'GOOGLE_API_KEY': os.getenv('GOOGLE_API_KEY')
+    'GOOGLE_API_KEY': os.getenv('GOOGLE_API_KEY'),
+    'HISTORY_FILE': 'medical_history.log'  # File to store conversation history
 })
 
 openai.api_key = app.config['OPENAI_API_KEY']
 
+# Initialize users database with more detailed medication tracking
 users_db = {
     "user1": {
         "password": "pass123",
@@ -31,13 +33,36 @@ users_db = {
             "age": 32,
             "gender": "female",
             "medical_history": "diabetes",
-            "medications": "Metformin"
+            "medications": {
+                "Metformin": {
+                    "dosage": "500mg",
+                    "frequency": "twice daily",
+                    "start_date": "2023-01-15",
+                    "prescribing_doctor": "Dr. Smith"
+                }
+            }
         },
         "conversations": []
     }
 }
 
 doctor_cache = {}
+
+def log_conversation(user_id, query, response):
+    """Log conversation to file with timestamp"""
+    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    log_entry = {
+        "timestamp": timestamp,
+        "user_id": user_id,
+        "query": query,
+        "response": response
+    }
+    
+    try:
+        with open(app.config['HISTORY_FILE'], 'a') as f:
+            f.write(json.dumps(log_entry) + '\n')
+    except Exception as e:
+        logging.error(f"Failed to log conversation: {str(e)}")
 
 def generate_token(user_id):
     return jwt.encode({'user_id': user_id, 'exp': datetime.utcnow() + timedelta(hours=24)}, app.config['SECRET_KEY'], algorithm='HS256')
@@ -73,6 +98,54 @@ def authenticate():
     token = generate_token(username)
     return jsonify({"token": token, "user_id": username, "profile": users_db[username]['profile']})
 
+@app.route('/api/medications', methods=['GET', 'POST', 'DELETE'])
+@token_required
+def manage_medications(current_user):
+    if request.method == 'GET':
+        # Return all medications for the user
+        return jsonify({
+            "medications": users_db[current_user]['profile'].get('medications', {})
+        })
+    
+    elif request.method == 'POST':
+        # Add or update a medication
+        data = request.json
+        med_name = data.get('name')
+        if not med_name:
+            return jsonify({"error": "Medication name is required"}), 400
+        
+        medications = users_db[current_user]['profile'].setdefault('medications', {})
+        medications[med_name] = {
+            "dosage": data.get('dosage', ''),
+            "frequency": data.get('frequency', ''),
+            "start_date": data.get('start_date', ''),
+            "prescribing_doctor": data.get('prescribing_doctor', ''),
+            "notes": data.get('notes', ''),
+            "last_updated": datetime.now().isoformat()
+        }
+        
+        return jsonify({
+            "message": "Medication added/updated successfully",
+            "medications": medications
+        })
+    
+    elif request.method == 'DELETE':
+        # Remove a medication
+        data = request.json
+        med_name = data.get('name')
+        if not med_name:
+            return jsonify({"error": "Medication name is required"}), 400
+        
+        medications = users_db[current_user]['profile'].get('medications', {})
+        if med_name in medications:
+            del medications[med_name]
+            return jsonify({
+                "message": "Medication removed successfully",
+                "medications": medications
+            })
+        else:
+            return jsonify({"error": "Medication not found"}), 404
+
 @app.route('/api/ask', methods=['POST'])
 @token_required
 def ask_question(current_user):
@@ -83,13 +156,19 @@ def ask_question(current_user):
         return jsonify({"error": "Please describe your symptoms"}), 400
 
     try:
+        # Format medications for the prompt
+        medications = users_db[current_user]['profile'].get('medications', {})
+        med_list = []
+        for name, details in medications.items():
+            med_list.append(f"{name} ({details.get('dosage', '')}, {details.get('frequency', '')})")
+        
         prompt = f"""As a senior medical professional, analyze these symptoms with caution:
 
 Patient Profile:
 - Age: {users_db[current_user]['profile'].get('age', 'Not specified')}
 - Gender: {users_db[current_user]['profile'].get('gender', 'Not specified')}
 - Medical History: {users_db[current_user]['profile'].get('medical_history', 'None')}
-- Medications: {users_db[current_user]['profile'].get('medications', 'None')}
+- Current Medications: {', '.join(med_list) if med_list else 'None'}
 
 Symptoms: \"{query}\"
 
@@ -100,7 +179,8 @@ Provide a structured response in valid JSON format ONLY:
   "warnings": ["list warning signs"],
   "emergency": "when to seek immediate care",
   "specialist": "recommended specialist type",
-  "summary": "2-line doctor briefing"
+  "summary": "2-line doctor briefing",
+  "medication_interactions": ["check for potential interactions with current medications"]
 }}"""
 
         response = openai.ChatCompletion.create(
@@ -120,20 +200,34 @@ Provide a structured response in valid JSON format ONLY:
                 "warnings": ["Watch for worsening symptoms"],
                 "emergency": "Seek help if severe pain or difficulty breathing",
                 "specialist": "General Practitioner",
-                "summary": "Patient requires professional medical evaluation"
+                "summary": "Patient requires professional medical evaluation",
+                "medication_interactions": ["Unable to assess medication interactions"]
             }
 
-        users_db[current_user]['conversations'].append({
+        # Store conversation in user history
+        conversation_entry = {
             "timestamp": datetime.now().isoformat(),
             "query": query,
             "response": answer,
             "raw_response": raw_answer
-        })
+        }
+        users_db[current_user]['conversations'].append(conversation_entry)
+        
+        # Log the conversation to file
+        log_conversation(current_user, query, answer)
 
         return jsonify(answer)
     except Exception as e:
         logging.error(f"Unexpected error: {str(e)}")
         return jsonify({"error": "AI processing failed"}), 500
+
+@app.route('/api/conversation-history', methods=['GET'])
+@token_required
+def get_conversation_history(current_user):
+    """Return the user's conversation history"""
+    return jsonify({
+        "conversations": users_db[current_user]['conversations']
+    })
 
 @app.route('/api/find-doctors', methods=['POST'])
 @token_required
