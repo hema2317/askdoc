@@ -19,7 +19,8 @@ CORS(app, resources={r"/api/*": {"origins": "*"}})
 app.config.update({
     'SECRET_KEY': os.getenv('FLASK_SECRET_KEY', 'your-secret-key-123'),
     'OPENAI_API_KEY': os.getenv('OPENAI_API_KEY'),
-    'GOOGLE_API_KEY': os.getenv('GOOGLE_API_KEY')
+    'GOOGLE_API_KEY': os.getenv('GOOGLE_API_KEY'),
+    'HISTORY_FILE': 'medical_history.log'
 })
 
 openai.api_key = app.config['OPENAI_API_KEY']
@@ -31,13 +32,11 @@ users_db = {
             "age": 32,
             "gender": "female",
             "medical_history": "diabetes",
-            "medications": ["Metformin"]
+            "medications": []
         },
         "conversations": []
     }
 }
-
-doctor_cache = {}
 
 def generate_token(user_id):
     return jwt.encode({'user_id': user_id, 'exp': datetime.utcnow() + timedelta(hours=24)}, app.config['SECRET_KEY'], algorithm='HS256')
@@ -73,25 +72,22 @@ def authenticate():
     token = generate_token(username)
     return jsonify({"token": token, "user_id": username, "profile": users_db[username]['profile']})
 
-@app.route('/api/medications', methods=['GET'])
-@token_required
-def get_medications(current_user):
-    return jsonify({"medications": users_db[current_user]['profile'].get('medications', [])})
-
 @app.route('/api/ask', methods=['POST'])
 @token_required
 def ask_question(current_user):
     data = request.json
     query = data.get('query', '').strip()
-    new_meds = data.get('new_medications', [])
 
     if not query:
         return jsonify({"error": "Please describe your symptoms"}), 400
 
-    # Update user medication history
-    if new_meds:
-        existing = users_db[current_user]['profile'].get('medications', [])
-        users_db[current_user]['profile']['medications'] = list(set(existing + new_meds))
+    # Medication detection from input
+    words = query.lower().split()
+    possible_meds = [w for w in words if w[0].isalpha() and len(w) > 3]
+    current_meds = users_db[current_user]['profile']['medications']
+    for med in possible_meds:
+        if med.capitalize() not in current_meds:
+            current_meds.append(med.capitalize())
 
     try:
         prompt = f"""As a senior medical professional, analyze these symptoms with caution:
@@ -100,7 +96,7 @@ Patient Profile:
 - Age: {users_db[current_user]['profile'].get('age', 'Not specified')}
 - Gender: {users_db[current_user]['profile'].get('gender', 'Not specified')}
 - Medical History: {users_db[current_user]['profile'].get('medical_history', 'None')}
-- Medications: {', '.join(users_db[current_user]['profile'].get('medications', []))}
+- Medications: {', '.join(users_db[current_user]['profile'].get('medications', [])) or 'None'}
 
 Symptoms: \"{query}\"
 
@@ -134,18 +130,27 @@ Provide a structured response in valid JSON format ONLY:
                 "summary": "Patient requires professional medical evaluation"
             }
 
-        users_db[current_user]['conversations'].append({
+        entry = {
             "timestamp": datetime.now().isoformat(),
             "query": query,
-            "response": answer,
-            "raw_response": raw_answer,
-            "medications": users_db[current_user]['profile']['medications']
-        })
+            "response": answer
+        }
+        users_db[current_user]['conversations'].append(entry)
+
+        with open(app.config['HISTORY_FILE'], 'a') as f:
+            f.write(json.dumps(entry) + '\n')
 
         return jsonify(answer)
     except Exception as e:
         logging.error(f"Unexpected error: {str(e)}")
         return jsonify({"error": "AI processing failed"}), 500
+
+@app.route('/api/conversation-history', methods=['GET'])
+@token_required
+def get_conversation_history(current_user):
+    return jsonify({
+        "conversations": users_db[current_user]['conversations']
+    })
 
 @app.route('/api/find-doctors', methods=['POST'])
 @token_required
@@ -207,7 +212,6 @@ def find_doctors(current_user):
             })
 
         return jsonify({"doctors": doctors})
-
     except Exception as e:
         logging.error(f"Doctor search error: {str(e)}")
         return jsonify({"error": "Service unavailable"}), 503
