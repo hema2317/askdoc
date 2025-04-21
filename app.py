@@ -1,7 +1,7 @@
 import os
 import json
 from datetime import datetime, timedelta
-from flask import Flask, request, jsonify, send_file, make_response
+from flask import Flask, request, jsonify
 from flask_cors import CORS
 import openai
 import jwt
@@ -9,29 +9,19 @@ from functools import wraps
 import requests
 from geopy.distance import geodesic
 import logging
-from werkzeug.utils import secure_filename
-from fpdf import FPDF
-import tempfile
 from dotenv import load_dotenv
 
-# Load environment variables
 load_dotenv()
 
-# Initialize Flask app
 app = Flask(__name__)
 CORS(app, resources={r"/api/*": {"origins": "*"}})
 
-# Configuration
 app.config.update({
     'SECRET_KEY': os.getenv('FLASK_SECRET_KEY', 'your-secret-key-123'),
     'OPENAI_API_KEY': os.getenv('OPENAI_API_KEY'),
-    'GOOGLE_API_KEY': os.getenv('GOOGLE_API_KEY'),
-    'UPLOAD_FOLDER': 'uploads/',
-    'ALLOWED_EXTENSIONS': {'png', 'jpg', 'jpeg', 'gif'},
-    'MAX_CONTENT_LENGTH': 16 * 1024 * 1024
+    'GOOGLE_API_KEY': os.getenv('GOOGLE_API_KEY')
 })
 
-# Initialize OpenAI
 openai.api_key = app.config['OPENAI_API_KEY']
 
 users_db = {
@@ -49,9 +39,6 @@ users_db = {
 
 doctor_cache = {}
 
-def allowed_file(filename):
-    return '.' in filename and filename.rsplit('.', 1)[1].lower() in app.config['ALLOWED_EXTENSIONS']
-
 def generate_token(user_id):
     return jwt.encode({'user_id': user_id, 'exp': datetime.utcnow() + timedelta(hours=24)}, app.config['SECRET_KEY'], algorithm='HS256')
 
@@ -65,7 +52,7 @@ def token_required(f):
         try:
             data = jwt.decode(token.split()[1], app.config['SECRET_KEY'], algorithms=["HS256"])
             current_user = data['user_id']
-        except Exception as e:
+        except:
             return jsonify({"error": "Invalid token"}), 401
 
         return f(current_user, *args, **kwargs)
@@ -84,11 +71,7 @@ def authenticate():
         return jsonify({"error": "Invalid credentials"}), 401
 
     token = generate_token(username)
-    return jsonify({
-        "token": token,
-        "user_id": username,
-        "profile": users_db[username]['profile']
-    })
+    return jsonify({"token": token, "user_id": username, "profile": users_db[username]['profile']})
 
 @app.route('/api/ask', methods=['POST'])
 @token_required
@@ -98,8 +81,6 @@ def ask_question(current_user):
 
     if not query:
         return jsonify({"error": "Please describe your symptoms"}), 400
-    if len(query) > 1000:
-        return jsonify({"error": "Query too long (max 1000 characters)"}), 400
 
     try:
         prompt = f"""As a senior medical professional, analyze these symptoms with caution:
@@ -130,7 +111,6 @@ Provide a structured response in valid JSON format ONLY:
         )
 
         raw_answer = response.choices[0].message.content.strip()
-
         try:
             answer = json.loads(raw_answer)
         except json.JSONDecodeError:
@@ -143,16 +123,14 @@ Provide a structured response in valid JSON format ONLY:
                 "summary": "Patient requires professional medical evaluation"
             }
 
-        conversation = {
+        users_db[current_user]['conversations'].append({
             "timestamp": datetime.now().isoformat(),
             "query": query,
             "response": answer,
             "raw_response": raw_answer
-        }
-        users_db[current_user]['conversations'].append(conversation)
+        })
 
         return jsonify(answer)
-
     except Exception as e:
         logging.error(f"Unexpected error: {str(e)}")
         return jsonify({"error": "AI processing failed"}), 500
@@ -161,29 +139,17 @@ Provide a structured response in valid JSON format ONLY:
 @token_required
 def find_doctors(current_user):
     data = request.json
-    location = data.get('location')
+    location = data.get('location', {"lat": 40.7608, "lng": -111.8910})
     specialty = data.get('specialty', '')
 
-    if not location or 'lat' not in location or 'lng' not in location:
-        return jsonify({"error": "Invalid location"}), 400
-
     try:
-        cache_key = f"{location['lat']},{location['lng']},{specialty}"
-        if cache_key in doctor_cache:
-            cached_data = doctor_cache[cache_key]
-            if (datetime.now() - cached_data['timestamp']).seconds < 3600:
-                return jsonify(cached_data['data'])
-
         params = {
             'key': app.config['GOOGLE_API_KEY'],
             'location': f"{location['lat']},{location['lng']}",
             'radius': 10000,
             'type': 'doctor',
-            'rankby': 'distance'
+            'keyword': specialty + ' doctor' if specialty else 'doctor'
         }
-
-        if specialty:
-            params['keyword'] = specialty + ' doctor'
 
         response = requests.get(
             'https://maps.googleapis.com/maps/api/place/nearbysearch/json',
@@ -227,11 +193,6 @@ def find_doctors(current_user):
                 "specialties": [specialty] if specialty else [],
                 "phone": phone
             })
-
-        doctor_cache[cache_key] = {
-            'data': {"doctors": doctors},
-            'timestamp': datetime.now()
-        }
 
         return jsonify({"doctors": doctors})
 
