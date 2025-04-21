@@ -157,7 +157,7 @@ Provide a structured response in valid JSON format ONLY:
         logging.error(f"Unexpected error: {str(e)}")
         return jsonify({"error": "AI processing failed"}), 500
 
-@app.route('/api/doctors', methods=['POST'])
+@app.route('/api/find-doctors', methods=['POST'])
 @token_required
 def find_doctors(current_user):
     data = request.json
@@ -201,15 +201,32 @@ def find_doctors(current_user):
                 (place['geometry']['location']['lat'], place['geometry']['location']['lng'])
             ).miles
 
+            # To fetch phone number, call Place Details API
+            place_id = place['place_id']
+            phone = None
+            try:
+                detail_res = requests.get(
+                    'https://maps.googleapis.com/maps/api/place/details/json',
+                    params={
+                        'key': app.config['GOOGLE_API_KEY'],
+                        'place_id': place_id,
+                        'fields': 'formatted_phone_number'
+                    }
+                )
+                phone_data = detail_res.json()
+                phone = phone_data.get('result', {}).get('formatted_phone_number')
+            except:
+                pass
+
             doctors.append({
-                "id": place['place_id'],
+                "id": place_id,
                 "name": place.get('name'),
                 "address": place.get('vicinity'),
                 "distance": round(distance, 1),
                 "rating": place.get('rating'),
                 "location": place['geometry']['location'],
                 "specialties": [specialty] if specialty else [],
-                "phone": place.get('formatted_phone_number')  # now added
+                "phone": phone
             })
 
         doctor_cache[cache_key] = {
@@ -223,5 +240,5 @@ def find_doctors(current_user):
         logging.error(f"Doctor search error: {str(e)}")
         return jsonify({"error": "Service unavailable"}), 503
 if __name__ == '__main__':
-    port = int(os.environ.get("PORT", 5000))
+    port = int(os.environ.get('PORT', 5000))
     app.run(host='0.0.0.0', port=port)
