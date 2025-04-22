@@ -44,15 +44,22 @@ def create_db_engine():
     
     for attempt in range(max_retries):
         try:
-            # Add sslmode=require to your connection string if not present
             db_url = app.config['DATABASE_URL']
-            if 'sslmode' not in db_url:
-                if 'postgresql://' in db_url:
-                    db_url = db_url.replace('postgresql://', 'postgresql://?sslmode=require')
-                elif 'postgres://' in db_url:
-                    db_url = db_url.replace('postgres://', 'postgres://?sslmode=require')
             
-            engine = create_engine(db_url, pool_pre_ping=True, pool_recycle=300)
+            # For Render PostgreSQL, we need to add specific SSL parameters
+            if 'postgres://' in db_url:
+                db_url = db_url.replace('postgres://', 'postgresql://')
+                
+            # Add SSL configuration
+            engine = create_engine(
+                db_url,
+                connect_args={
+                    'sslmode': 'require',
+                    'sslrootcert': '/etc/ssl/certs/ca-certificates.crt'  # Standard CA certificates path
+                },
+                pool_pre_ping=True,
+                pool_recycle=300
+            )
             
             # Test connection
             with engine.connect() as conn:
@@ -67,7 +74,6 @@ def create_db_engine():
                 time.sleep(retry_delay)
                 continue
             raise
-
 Base = declarative_base()
 engine = create_db_engine()
 Session = scoped_session(sessionmaker(bind=engine))
