@@ -1,8 +1,7 @@
 import os
 import logging
 import time
-import ssl
-from urllib.parse import urlparse, parse_qs, urlencode
+from urllib.parse import urlparse
 from flask import Flask, request, jsonify
 from sqlalchemy import create_engine, text, Column, Integer, String, Text, DateTime
 from sqlalchemy.orm import scoped_session, sessionmaker, declarative_base
@@ -47,13 +46,6 @@ class Medication(Base):
     frequency = Column(String(50))
     created_at = Column(DateTime, default=datetime.utcnow)
 
-def create_ssl_context():
-    """Create a custom SSL context for PostgreSQL"""
-    context = ssl.create_default_context()
-    context.check_hostname = False
-    context.verify_mode = ssl.CERT_NONE
-    return context
-
 def get_db_config():
     """Parse and enhance database configuration with SSL"""
     db_url = app.config['DATABASE_URL']
@@ -62,42 +54,24 @@ def get_db_config():
     if db_url.startswith('postgres://'):
         db_url = db_url.replace('postgres://', 'postgresql://', 1)
     
-    # Parse URL and query parameters
+    # Parse URL
     parsed = urlparse(db_url)
-    query = parse_qs(parsed.query)
     
-    # Force SSL parameters
-    query['sslmode'] = ['require']
-    query['sslrootcert'] = ['/etc/ssl/certs/ca-certificates.crt']
-    
-    # Rebuild URL
-    netloc = parsed.netloc
-    if parsed.password and '@' in parsed.netloc:
-        # Handle special characters in password
-        userinfo = parsed.netloc.split('@')[0]
-        hostport = parsed.netloc.split('@')[1]
-        userinfo = userinfo.split(':')[0] + ':' + parsed.password
-        netloc = f"{userinfo}@{hostport}"
-    
-    new_query = urlencode(query, doseq=True)
-    db_url = f"postgresql://{netloc}{parsed.path}?{new_query}"
-    
+    # Return both SQLAlchemy URL and direct connection params
     return {
-        'db_url': db_url,
+        'sqlalchemy_url': db_url,
         'direct_params': {
             'dbname': parsed.path[1:],
             'user': parsed.username,
             'password': parsed.password,
             'host': parsed.hostname,
             'port': parsed.port,
-            'sslmode': 'require',
-            'sslcontext': create_ssl_context(),
-            'connect_timeout': 5
+            'sslmode': 'require'
         }
     }
 
 def test_direct_connection(params):
-    """Test direct connection with enhanced SSL handling"""
+    """Test direct connection with proper SSL"""
     try:
         conn = psycopg2.connect(
             cursor_factory=RealDictCursor,
@@ -128,7 +102,7 @@ def create_db_engine():
             
             # Create engine with explicit SSL configuration
             engine = create_engine(
-                db_config['db_url'],
+                db_config['sqlalchemy_url'],
                 connect_args={
                     'sslmode': 'require',
                     'sslrootcert': '/etc/ssl/certs/ca-certificates.crt',
