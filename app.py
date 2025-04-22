@@ -1,125 +1,151 @@
-from flask import Flask
-from sqlalchemy import create_engine, text
-from sqlalchemy.orm import scoped_session, sessionmaker
-from urllib.parse import urlparse
+# app.py
+from flask import Flask, jsonify, request
+from flask_cors import CORS
+from sqlalchemy import create_engine, Column, Integer, String, Text, DateTime, ForeignKey, text
+from sqlalchemy.orm import declarative_base, sessionmaker, scoped_session
+from datetime import datetime
+import openai
 import os
 import logging
 import time
-import psycopg2  # For direct connection test
+import psycopg2
+from urllib.parse import urlparse
+from dotenv import load_dotenv
 
-# Configure logging
+# Initialize
+load_dotenv()
+app = Flask(__name__)
+CORS(app)
+
+# Configuration
+app.config.update({
+    'SECRET_KEY': os.getenv('FLASK_SECRET_KEY'),
+    'OPENAI_API_KEY': os.getenv('OPENAI_API_KEY'),
+    'DATABASE_URL': os.getenv('DATABASE_URL'),
+})
+
+# Logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Initialize Flask
-app = Flask(__name__)
-app.config.from_mapping(
-    SECRET_KEY=os.getenv("FLASK_SECRET_KEY", "dev"),
-    DATABASE_URL=os.getenv("DATABASE_URL")  # Render provides this
-)
+# Database Models
+Base = declarative_base()
 
-# ---------------------------------------------------
-# ✅ 1. TEST DIRECT CONNECTION FIRST (Bypass SQLAlchemy)
-# ---------------------------------------------------
-def test_postgres_connection():
-    """Test if we can connect directly to PostgreSQL with SSL."""
-    try:
-        db_url = urlparse(app.config["DATABASE_URL"])
-        
-        # Force 'postgresql://' instead of 'postgres://'
-        db_url_str = app.config["DATABASE_URL"].replace(
-            "postgres://", "postgresql://", 1
-        )
-        
-        conn = psycopg2.connect(
-            dbname=db_url.path[1:],
-            user=db_url.username,
-            password=db_url.password,
-            host=db_url.hostname,
-            port=db_url.port,
-            sslmode="require",  # Enforce SSL
-            connect_timeout=5   # Fail fast if DB is unreachable
-        )
-        conn.close()
-        logger.info("✅ Direct PostgreSQL connection successful!")
-        return True
-    except Exception as e:
-        logger.error(f"❌ Direct PostgreSQL connection failed: {e}")
-        return False
+class User(Base):
+    __tablename__ = 'users'
+    id = Column(Integer, primary_key=True)
+    username = Column(String(80), unique=True)
+    # Add other fields as needed
 
-# ---------------------------------------------------
-# ✅ 2. CONFIGURE SQLALCHEMY ENGINE (With SSL Enforcement)
-# ---------------------------------------------------
+class Medication(Base):
+    __tablename__ = 'medications'
+    id = Column(Integer, primary_key=True)
+    name = Column(String(100))
+    dosage = Column(String(50))
+    user_id = Column(Integer, ForeignKey('users.id'))
+    # Add other fields
+
+# Database Connection
 def create_db_engine():
-    """Create SQLAlchemy engine with retries and SSL enforcement."""
-    max_retries = 3
-    retry_delay = 5  # Seconds between retries
+    max_retries = 5
+    retry_delay = 3
     
-    # Ensure URL starts with postgresql:// (not postgres://)
-    db_url = app.config["DATABASE_URL"].replace(
-        "postgres://", "postgresql://", 1
-    )
+    db_url = app.config['DATABASE_URL']
     
-    # Add ?sslmode=require if missing
-    if "?sslmode=" not in db_url.lower():
-        db_url += "?sslmode=require"
+    # Fix URL format
+    if db_url.startswith('postgres://'):
+        db_url = db_url.replace('postgres://', 'postgresql://', 1)
+    
+    # Ensure SSL
+    if '?sslmode=' not in db_url.lower():
+        db_url += '?sslmode=require'
     
     for attempt in range(max_retries):
         try:
             engine = create_engine(
                 db_url,
                 connect_args={
-                    "sslmode": "require",
-                    "sslrootcert": "/etc/ssl/certs/ca-certificates.crt",
-                    "connect_timeout": 10,
+                    'sslmode': 'require',
+                    'sslrootcert': '/etc/ssl/certs/ca-certificates.crt',
+                    'connect_timeout': 10
                 },
-                pool_pre_ping=True,  # Checks connection health
-                pool_recycle=300,   # Recycle connections every 5 mins
-                pool_size=5,        # Minimum connections
-                max_overflow=10,    # Max temporary connections
-                echo=False          # Disable in production
+                pool_pre_ping=True,
+                pool_recycle=300,
+                echo=True  # Log SQL queries for debugging
             )
             
             # Test connection
             with engine.connect() as conn:
                 conn.execute(text("SELECT 1"))
             
-            logger.info("✅ SQLAlchemy engine connected successfully!")
+            logger.info("✅ Database connected successfully")
             return engine
-        
+            
         except Exception as e:
-            logger.error(f"Attempt {attempt + 1} failed: {e}")
+            logger.error(f"Attempt {attempt+1} failed: {str(e)}")
             if attempt < max_retries - 1:
                 time.sleep(retry_delay)
                 continue
-            logger.critical("🚨 Failed to connect to PostgreSQL after retries!")
-            raise RuntimeError("Database connection failed.")
+            logger.critical("Failed to connect to database")
+            raise RuntimeError("Database connection failed")
 
-# ---------------------------------------------------
-# ✅ 3. INITIALIZE DATABASE (With Error Handling)
-# ---------------------------------------------------
-def init_db():
-    """Initialize database connection."""
-    if not test_postgres_connection():
-        raise RuntimeError("Cannot connect to PostgreSQL (check SSL settings).")
-    
+# Initialize database
+try:
     engine = create_db_engine()
     Session = scoped_session(sessionmaker(bind=engine))
-    
-    # Optional: Create tables if they don't exist
-    from sqlalchemy.ext.declarative import declarative_base
-    Base = declarative_base()
     Base.metadata.create_all(engine)
-    
-    return engine, Session
+except Exception as e:
+    logger.critical(f"Database initialization failed: {e}")
+    exit(1)
 
-# ---------------------------------------------------
-# 🚀 START THE APPLICATION (With Safety Checks)
-# ---------------------------------------------------
-if __name__ == "__main__":
+# Analysis Functions
+def perform_analysis(data):
+    """Example analysis function using OpenAI"""
     try:
-        engine, Session = init_db()
-        app.run(host="0.0.0.0", port=5000)
+        response = openai.ChatCompletion.create(
+            model="gpt-3.5-turbo",
+            messages=[{"role": "user", "content": f"Analyze this data: {data}"}]
+        )
+        return response.choices[0].message.content
     except Exception as e:
-        logger.critical(f"🔥 Application failed to start: {e}")
-        exit(1)
+        logger.error(f"Analysis failed: {e}")
+        return None
+
+# Routes
+@app.route('/analyze', methods=['POST'])
+def analyze():
+    try:
+        # Get data from request
+        data = request.json
+        
+        # Get medications from database
+        with Session() as session:
+            medications = session.query(Medication).all()
+            med_data = [{'name': m.name, 'dosage': m.dosage} for m in medications]
+        
+        # Perform analysis
+        analysis_result = perform_analysis(med_data)
+        
+        if not analysis_result:
+            raise ValueError("Analysis returned no results")
+        
+        return jsonify({
+            'status': 'success',
+            'analysis': analysis_result,
+            'medications': med_data
+        })
+        
+    except Exception as e:
+        logger.error(f"Route error: {str(e)}")
+        return jsonify({
+            'status': 'error',
+            'message': str(e)
+        }), 500
+
+# Health Check
+@app.route('/health')
+def health_check():
+    return jsonify({'status': 'healthy'})
+
+if __name__ == '__main__':
+    app.run(host='0.0.0.0', port=5000)
