@@ -40,45 +40,52 @@ openai.api_key = app.config['OPENAI_API_KEY']
 # Database setup with retry logic
 def create_db_engine():
     max_retries = 5
-    retry_delay = 5  # seconds
+    retry_delay = 5
+    
+    db_url = app.config['DATABASE_URL']
+    
+    # Ensure proper URL scheme
+    if db_url.startswith('postgres://'):
+        db_url = db_url.replace('postgres://', 'postgresql://', 1)
+    
+    # Add SSL parameters directly to the URL
+    if 'sslmode' not in db_url.lower():
+        if '?' in db_url:
+            db_url += '&sslmode=require'
+        else:
+            db_url += '?sslmode=require'
     
     for attempt in range(max_retries):
         try:
-            db_url = app.config['DATABASE_URL']
-            
-            # Ensure we're using postgresql:// instead of postgres://
-            if db_url.startswith('postgres://'):
-                db_url = db_url.replace('postgres://', 'postgresql://', 1)
-            
-            # Add SSL configuration
             engine = create_engine(
                 db_url,
                 connect_args={
                     'sslmode': 'require',
                     'sslrootcert': '/etc/ssl/certs/ca-certificates.crt',
-                    'options': '-c statement_timeout=5000'  # Set timeout to 5 seconds
+                    'connect_timeout': 10  # 10 second timeout
                 },
                 pool_pre_ping=True,
                 pool_recycle=300,
                 pool_size=5,
                 max_overflow=10,
-                pool_timeout=30
+                pool_timeout=30,
+                echo_pool=True  # For debugging
             )
             
             # Test connection with a simple query
             with engine.connect() as conn:
                 conn.execute(text("SELECT 1"))
-                
+            
             logger.info("Database connection established successfully")
             return engine
             
         except Exception as e:
-            logger.warning(f"Database connection attempt {attempt + 1} failed: {str(e)}")
+            logger.error(f"Attempt {attempt + 1} failed: {str(e)}")
             if attempt < max_retries - 1:
                 time.sleep(retry_delay)
                 continue
-            logger.error("Failed to establish database connection after multiple attempts")
-            raise
+            logger.critical("Failed to connect to database after multiple attempts")
+            raise RuntimeError("Database connection failed") from e
 Base = declarative_base()
 engine = create_db_engine()
 Session = scoped_session(sessionmaker(bind=engine))
