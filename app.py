@@ -1,10 +1,11 @@
+# app.py
 import os
 import psycopg2
 from psycopg2 import OperationalError
 from flask import Flask, request, jsonify
 import time
 import logging
-from openai import OpenAI
+import openai  # Using the correct import for latest stable version
 
 app = Flask(__name__)
 
@@ -12,16 +13,24 @@ app = Flask(__name__)
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Initialize OpenAI client
-client = OpenAI(api_key=os.getenv('OPENAI_API_KEY'))
+# Initialize OpenAI - works with both old and new versions
+try:
+    # For newer versions (>= v1.0.0)
+    from openai import OpenAI
+    client = OpenAI(api_key=os.getenv('OPENAI_API_KEY'))
+    openai_version = "new"
+except ImportError:
+    # Fallback to old version (< v1.0.0)
+    openai.api_key = os.getenv('OPENAI_API_KEY')
+    openai_version = "old"
 
 # Database configuration
 DB_CONFIG = {
-    'host': "dpg-d03h39adb0a6c738c1t50-a.oregon-postgres.render.com",
-    'database': "healthdb",
-    'user': "healthdb_user",
+    'host': os.getenv('DB_HOST'),
+    'database': os.getenv('DB_NAME'),
+    'user': os.getenv('DB_USER'),
     'password': os.getenv('DB_PASSWORD'),
-    'port': "5432"
+    'port': os.getenv('DB_PORT', '5432')
 }
 
 # System prompt for medical analysis
@@ -33,8 +42,7 @@ You are DoctorAI, a professional medical analysis system. Analyze the patient's 
 3. Recommended actions or remedies
 4. When to seek immediate medical attention
 
-Present your analysis in clear, professional medical language suitable for patients.
-Format your response with clear sections for each vital sign and overall recommendations.
+Be concise but thorough. Format your response with clear sections.
 """
 
 def get_db_connection(max_retries=3, retry_delay=2):
@@ -59,7 +67,7 @@ def get_db_connection(max_retries=3, retry_delay=2):
     logger.error("Failed to connect to database after multiple attempts")
     return None
 
-async def get_openai_analysis(data):
+def get_openai_analysis(data):
     """Get professional medical analysis from OpenAI"""
     try:
         # Prepare the prompt
@@ -72,23 +80,33 @@ async def get_openai_analysis(data):
         - Additional Notes: {data.get('notes', 'None')}
         """
         
-        response = client.chat.completions.create(
-            model="gpt-4",
-            messages=[
-                {"role": "system", "content": MEDICAL_SYSTEM_PROMPT},
-                {"role": "user", "content": user_prompt}
-            ],
-            temperature=0.3  # More deterministic medical responses
-        )
-        
-        return response.choices[0].message.content
+        if openai_version == "new":
+            response = client.chat.completions.create(
+                model="gpt-3.5-turbo",  # Using 3.5 for cost efficiency
+                messages=[
+                    {"role": "system", "content": MEDICAL_SYSTEM_PROMPT},
+                    {"role": "user", "content": user_prompt}
+                ],
+                temperature=0.3
+            )
+            return response.choices[0].message.content
+        else:
+            response = openai.ChatCompletion.create(
+                model="gpt-3.5-turbo",
+                messages=[
+                    {"role": "system", "content": MEDICAL_SYSTEM_PROMPT},
+                    {"role": "user", "content": user_prompt}
+                ],
+                temperature=0.3
+            )
+            return response['choices'][0]['message']['content']
     
     except Exception as e:
         logger.error(f"OpenAI API error: {str(e)}")
         return None
 
 @app.route('/analyze', methods=['POST'])
-async def analyze():
+def analyze():
     try:
         if not request.is_json:
             return jsonify({'error': 'Request must be JSON'}), 400
@@ -107,7 +125,7 @@ async def analyze():
             }), 400
         
         # Get OpenAI analysis
-        analysis = await get_openai_analysis(data)
+        analysis = get_openai_analysis(data)
         
         if not analysis:
             return jsonify({
@@ -169,7 +187,10 @@ def health_check():
     
     # Check OpenAI connection
     try:
-        client.models.list()  # Simple API call to check connectivity
+        if openai_version == "new":
+            client.models.list()  # Simple API call to check connectivity
+        else:
+            openai.Model.list()
         openai_status = 'connected'
     except Exception as e:
         openai_status = 'unavailable'
@@ -179,11 +200,8 @@ def health_check():
         'status': 'operational',
         'services': {
             'database': db_status,
-            'openai': openai_status
-        },
-        'endpoints': {
-            '/analyze': 'POST medical data for professional analysis',
-            '/health': 'GET service status'
+            'openai': openai_status,
+            'openai_version': openai_version
         }
     }), 200
 
