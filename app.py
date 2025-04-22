@@ -1,127 +1,191 @@
 import os
 import psycopg2
 from psycopg2 import OperationalError
-from sqlalchemy import create_engine
-from sqlalchemy.exc import SQLAlchemyError
 from flask import Flask, request, jsonify
 import time
-from functools import wraps
+import logging
+from openai import OpenAI
 
 app = Flask(__name__)
 
-# Configuration - replace with your actual credentials
+# Configure logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+# Initialize OpenAI client
+client = OpenAI(api_key=os.getenv('OPENAI_API_KEY'))
+
+# Database configuration
 DB_CONFIG = {
     'host': "dpg-d03h39adb0a6c738c1t50-a.oregon-postgres.render.com",
     'database': "healthdb",
     'user': "healthdb_user",
-    'password': "your_password_here",
+    'password': os.getenv('DB_PASSWORD'),
     'port': "5432"
 }
 
-# Database connection with retry logic
-def get_db_connection(max_retries=5, retry_delay=2):
-    retry_count = 0
-    last_exception = None
-    
-    while retry_count < max_retries:
+# System prompt for medical analysis
+MEDICAL_SYSTEM_PROMPT = """
+You are DoctorAI, a professional medical analysis system. Analyze the patient's vitals and provide:
+
+1. Professional assessment of each vital sign
+2. Potential health implications
+3. Recommended actions or remedies
+4. When to seek immediate medical attention
+
+Present your analysis in clear, professional medical language suitable for patients.
+Format your response with clear sections for each vital sign and overall recommendations.
+"""
+
+def get_db_connection(max_retries=3, retry_delay=2):
+    """Get database connection with retry logic"""
+    for attempt in range(max_retries):
         try:
-            # Try to create a connection
             conn = psycopg2.connect(
                 host=DB_CONFIG['host'],
                 database=DB_CONFIG['database'],
                 user=DB_CONFIG['user'],
                 password=DB_CONFIG['password'],
                 port=DB_CONFIG['port'],
-                sslmode='require'  # Important for Render.com PostgreSQL
+                sslmode='require'
             )
+            logger.info("Database connection established")
             return conn
         except OperationalError as e:
-            last_exception = e
-            retry_count += 1
-            app.logger.error(f"Attempt {retry_count} failed: {e}")
-            if retry_count < max_retries:
+            logger.warning(f"Attempt {attempt + 1} failed: {str(e)}")
+            if attempt < max_retries - 1:
                 time.sleep(retry_delay)
     
-    app.logger.error(f"Failed to connect to database after {max_retries} attempts")
+    logger.error("Failed to connect to database after multiple attempts")
     return None
 
-# Decorator for routes that need DB but can work without it
-def with_db_fallback(func):
-    @wraps(func)
-    def wrapper(*args, **kwargs):
-        try:
-            conn = get_db_connection()
-            if conn is None:
-                return func(*args, **kwargs, db_available=False)
-            try:
-                return func(*args, **kwargs, db_available=True, db_conn=conn)
-            finally:
-                conn.close()
-        except Exception as e:
-            app.logger.error(f"Database operation failed: {e}")
-            return func(*args, **kwargs, db_available=False)
-    return wrapper
-
-# Medical analysis function (works without DB)
-def analyze_medical_data(data):
-    # Example analysis - replace with your actual medical analysis logic
-    analysis = {
-        'status': 'completed',
-        'findings': {
-            'blood_pressure': 'normal' if 110 <= data.get('systolic_bp', 0) <= 120 else 'elevated',
-            'heart_rate': 'normal' if 60 <= data.get('heart_rate', 0) <= 100 else 'abnormal',
-            'temperature': 'normal' if 36.5 <= data.get('temperature', 0) <= 37.5 else 'fever'
-        },
-        'recommendations': [
-            'Follow up in 3 months',
-            'Maintain healthy diet'
-        ]
-    }
-    return analysis
+async def get_openai_analysis(data):
+    """Get professional medical analysis from OpenAI"""
+    try:
+        # Prepare the prompt
+        user_prompt = f"""
+        Analyze these patient vitals:
+        - Blood Pressure: {data.get('systolic_bp')}/{data.get('diastolic_bp')} mmHg
+        - Heart Rate: {data.get('heart_rate')} bpm
+        - Temperature: {data.get('temperature')} °C
+        - Oxygen Saturation: {data.get('spo2', 'N/A')}%
+        - Additional Notes: {data.get('notes', 'None')}
+        """
+        
+        response = client.chat.completions.create(
+            model="gpt-4",
+            messages=[
+                {"role": "system", "content": MEDICAL_SYSTEM_PROMPT},
+                {"role": "user", "content": user_prompt}
+            ],
+            temperature=0.3  # More deterministic medical responses
+        )
+        
+        return response.choices[0].message.content
+    
+    except Exception as e:
+        logger.error(f"OpenAI API error: {str(e)}")
+        return None
 
 @app.route('/analyze', methods=['POST'])
-@with_db_fallback
-def analyze(db_available=False, db_conn=None):
+async def analyze():
     try:
-        data = request.json
+        if not request.is_json:
+            return jsonify({'error': 'Request must be JSON'}), 400
         
-        # Perform medical analysis (works without DB)
-        analysis = analyze_medical_data(data)
+        data = request.get_json()
+        logger.info(f"Received data: {data}")
+        
+        # Validate required fields
+        required_fields = ['systolic_bp', 'diastolic_bp', 'heart_rate', 'temperature']
+        missing_fields = [field for field in required_fields if field not in data]
+        
+        if missing_fields:
+            return jsonify({
+                'error': 'Missing required fields',
+                'missing_fields': missing_fields
+            }), 400
+        
+        # Get OpenAI analysis
+        analysis = await get_openai_analysis(data)
+        
+        if not analysis:
+            return jsonify({
+                'error': 'Failed to generate medical analysis',
+                'details': 'AI service unavailable'
+            }), 503
+        
+        # Prepare response
+        response = {
+            'status': 'analysis_complete',
+            'medical_analysis': analysis,
+            'vitals': {
+                'blood_pressure': f"{data['systolic_bp']}/{data['diastolic_bp']}",
+                'heart_rate': data['heart_rate'],
+                'temperature': data['temperature']
+            }
+        }
         
         # Store in database if available
-        if db_available and db_conn:
+        db_conn = get_db_connection()
+        if db_conn:
             try:
                 cursor = db_conn.cursor()
                 cursor.execute(
-                    "INSERT INTO medical_records (patient_data, analysis) VALUES (%s, %s)",
-                    (str(data), str(analysis))
+                    """INSERT INTO medical_analyses 
+                    (vitals, analysis, created_at) 
+                    VALUES (%s, %s, NOW())""",
+                    (str(data), analysis)
                 )
                 db_conn.commit()
-                analysis['database_status'] = 'stored'
+                response['database_status'] = 'stored'
+                logger.info("Analysis stored in database")
             except Exception as e:
                 db_conn.rollback()
-                analysis['database_status'] = 'storage_failed'
-                app.logger.error(f"Failed to store analysis: {e}")
+                response['database_status'] = 'storage_failed'
+                logger.error(f"Database storage failed: {str(e)}")
+            finally:
+                db_conn.close()
         else:
-            analysis['database_status'] = 'database_unavailable'
+            response['database_status'] = 'database_unavailable'
+            logger.warning("Analysis performed without database storage")
         
-        return jsonify(analysis), 200
+        return jsonify(response), 200
     
     except Exception as e:
-        app.logger.error(f"Analysis failed: {e}")
-        return jsonify({'error': 'Analysis failed', 'details': str(e)}), 500
+        logger.error(f"Server error: {str(e)}")
+        return jsonify({
+            'error': 'Internal server error',
+            'details': str(e)
+        }), 500
 
-@app.route('/health')
+@app.route('/health', methods=['GET'])
 def health_check():
-    # Simple health check endpoint
-    conn = get_db_connection()
-    db_status = 'healthy' if conn else 'unavailable'
-    if conn:
-        conn.close()
+    # Check database connection
+    db_conn = get_db_connection()
+    db_status = 'connected' if db_conn else 'unavailable'
+    if db_conn:
+        db_conn.close()
+    
+    # Check OpenAI connection
+    try:
+        client.models.list()  # Simple API call to check connectivity
+        openai_status = 'connected'
+    except Exception as e:
+        openai_status = 'unavailable'
+        logger.error(f"OpenAI health check failed: {str(e)}")
+    
     return jsonify({
-        'status': 'running',
-        'database': db_status
+        'status': 'operational',
+        'services': {
+            'database': db_status,
+            'openai': openai_status
+        },
+        'endpoints': {
+            '/analyze': 'POST medical data for professional analysis',
+            '/health': 'GET service status'
+        }
     }), 200
 
 if __name__ == '__main__':
-    app.run(debug=True)
+    app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 5000)))
