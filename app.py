@@ -1,7 +1,6 @@
 import os
 import logging
 import time
-from urllib.parse import urlparse
 from flask import Flask, request, jsonify
 from sqlalchemy import create_engine, text, Column, Integer, String, Text, DateTime
 from sqlalchemy.orm import scoped_session, sessionmaker, declarative_base
@@ -47,7 +46,7 @@ class Medication(Base):
     created_at = Column(DateTime, default=datetime.utcnow)
 
 def create_db_engine():
-    """Create SQLAlchemy engine with guaranteed SSL connection"""
+    """Create SQLAlchemy engine with guaranteed SSL connection for Render"""
     max_retries = app.config['DB_CONNECT_RETRIES']
     retry_delay = app.config['DB_CONNECT_DELAY']
     
@@ -64,14 +63,12 @@ def create_db_engine():
                 db_url,
                 connect_args={
                     'sslmode': 'require',
-                    'sslrootcert': '/etc/ssl/certs/ca-certificates.crt',
                     'connect_timeout': 10
                 },
                 pool_pre_ping=True,
                 pool_recycle=300,
                 pool_size=5,
-                max_overflow=10,
-                echo=True
+                max_overflow=10
             )
             
             # Test connection
@@ -103,21 +100,26 @@ def analyze_symptoms(symptoms, medications):
     """Analyze symptoms using OpenAI"""
     try:
         prompt = f"""
-        Analyze these symptoms: {symptoms}
+        As a medical professional, analyze these symptoms:
+        {symptoms}
+        
         Current medications: {', '.join(medications) if medications else 'None'}
         
         Provide:
-        1. Potential conditions
+        1. Potential diagnoses (most likely first)
         2. Recommended actions
-        3. Medication interactions to watch for
-        4. When to seek emergency care
+        3. Red flags requiring emergency care
+        4. Possible medication interactions
+        5. When to consult a doctor
+        
+        Use clear, concise language suitable for patients.
         """
         
         response = openai.ChatCompletion.create(
             model="gpt-3.5-turbo",
             messages=[{"role": "user", "content": prompt}],
             temperature=0.7,
-            max_tokens=500
+            max_tokens=600
         )
         
         return response.choices[0].message.content
@@ -131,8 +133,8 @@ def analyze():
     """Endpoint for symptom analysis"""
     try:
         data = request.get_json()
-        symptoms = data.get('symptoms', '')
-        current_meds = data.get('current_meds', [])
+        symptoms = data.get('symptoms', '').strip()
+        current_meds = [m.strip() for m in data.get('current_meds', []) if m.strip()]
         
         if not symptoms:
             return jsonify({"error": "Symptoms are required"}), 400
@@ -152,17 +154,18 @@ def analyze():
                 analysis=analysis_result
             )
             session.add(analysis)
-            session.commit()
             
             # Add any detected medications
             for med in current_meds:
                 if med and not session.query(Medication).filter_by(name=med).first():
                     session.add(Medication(name=med))
+            
             session.commit()
             
             return jsonify({
                 "status": "success",
-                "analysis": analysis_result
+                "analysis": analysis_result,
+                "analysis_id": analysis.id
             })
             
         except Exception as e:
@@ -186,7 +189,8 @@ def get_medications():
             "id": m.id,
             "name": m.name,
             "dosage": m.dosage,
-            "frequency": m.frequency
+            "frequency": m.frequency,
+            "created_at": m.created_at.isoformat()
         } for m in meds])
     except Exception as e:
         logger.error(f"Medications error: {e}")
