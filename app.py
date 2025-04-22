@@ -6,6 +6,7 @@ from sqlalchemy.orm import declarative_base, sessionmaker, relationship
 import openai, os, jwt
 from datetime import datetime, timedelta
 from functools import wraps
+from twilio.rest import Client
 
 # Load environment variables
 load_dotenv()
@@ -15,10 +16,13 @@ app = Flask(__name__)
 CORS(app)
 
 # Config
-app.config['SECRET_KEY'] = os.getenv('SECRET_KEY', 'health-assistant-secret')
+app.config['SECRET_KEY'] = os.getenv('FLASK_SECRET_KEY', 'health-assistant-secret')
 app.config['OPENAI_API_KEY'] = os.getenv('OPENAI_API_KEY')
 app.config['DATABASE_URL'] = os.getenv('DATABASE_URL')
 app.config['EMERGENCY_CONTACT'] = os.getenv('EMERGENCY_CONTACT', '911')
+app.config['TWILIO_SID'] = os.getenv('TWILIO_SID')
+app.config['TWILIO_TOKEN'] = os.getenv('TWILIO_TOKEN')
+app.config['GOOGLE_API_KEY'] = os.getenv('GOOGLE_API_KEY')
 
 openai.api_key = app.config['OPENAI_API_KEY']
 
@@ -169,5 +173,3 @@ def emergency(current_user):
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=5000, debug=True)
-with app.app_context():
-    db.create_all()
