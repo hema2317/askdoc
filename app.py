@@ -3,6 +3,7 @@ import os
 import psycopg2
 from psycopg2 import OperationalError
 from flask import Flask, request, jsonify
+from flask_cors import CORS  # ✅ new
 import time
 import logging
 import openai
@@ -10,6 +11,7 @@ import json
 from datetime import datetime
 
 app = Flask(__name__)
+CORS(app, origins=["https://snack.expo.dev"])  # ✅ enables frontend access
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
