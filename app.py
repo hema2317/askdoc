@@ -3,15 +3,17 @@ import os
 import psycopg2
 from psycopg2 import OperationalError
 from flask import Flask, request, jsonify
-from flask_cors import CORS  # ✅ new
+from flask_cors import CORS
 import time
 import logging
 import openai
 import json
 from datetime import datetime
 
+logging.getLogger('flask_cors').level = logging.DEBUG
+
 app = Flask(__name__)
-CORS(app, origins=["https://snack.expo.dev"])  # ✅ enables frontend access
+CORS(app, resources={r"/*": {"origins": "*"}})  # ✅ FIXED CORS
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
