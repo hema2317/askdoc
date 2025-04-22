@@ -46,24 +46,28 @@ def create_db_engine():
         try:
             db_url = app.config['DATABASE_URL']
             
-            # For Render PostgreSQL, we need to add specific SSL parameters
-            if 'postgres://' in db_url:
-                db_url = db_url.replace('postgres://', 'postgresql://')
-                
+            # Ensure we're using postgresql:// instead of postgres://
+            if db_url.startswith('postgres://'):
+                db_url = db_url.replace('postgres://', 'postgresql://', 1)
+            
             # Add SSL configuration
             engine = create_engine(
                 db_url,
                 connect_args={
                     'sslmode': 'require',
-                    'sslrootcert': '/etc/ssl/certs/ca-certificates.crt'  # Standard CA certificates path
+                    'sslrootcert': '/etc/ssl/certs/ca-certificates.crt',
+                    'options': '-c statement_timeout=5000'  # Set timeout to 5 seconds
                 },
                 pool_pre_ping=True,
-                pool_recycle=300
+                pool_recycle=300,
+                pool_size=5,
+                max_overflow=10,
+                pool_timeout=30
             )
             
-            # Test connection
+            # Test connection with a simple query
             with engine.connect() as conn:
-                conn.execute("SELECT 1")
+                conn.execute(text("SELECT 1"))
                 
             logger.info("Database connection established successfully")
             return engine
@@ -73,6 +77,7 @@ def create_db_engine():
             if attempt < max_retries - 1:
                 time.sleep(retry_delay)
                 continue
+            logger.error("Failed to establish database connection after multiple attempts")
             raise
 Base = declarative_base()
 engine = create_db_engine()
