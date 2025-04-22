@@ -1,10 +1,10 @@
-from flask import Flask, request, jsonify
-from sqlalchemy import create_engine, text, Column, Integer, String, Text, DateTime
-from sqlalchemy.orm import scoped_session, sessionmaker, declarative_base
-from urllib.parse import urlparse
 import os
 import logging
 import time
+from urllib.parse import urlparse
+from flask import Flask, request, jsonify
+from sqlalchemy import create_engine, text, Column, Integer, String, Text, DateTime
+from sqlalchemy.orm import scoped_session, sessionmaker, declarative_base
 import psycopg2
 import openai
 from datetime import datetime
@@ -17,8 +17,8 @@ logger = logging.getLogger(__name__)
 # Initialize Flask
 app = Flask(__name__)
 app.config.from_mapping(
-    SECRET_KEY=os.getenv("FLASK_SECRET_KEY", "dev"),
-    DATABASE_URL=os.getenv("DATABASE_URL"),  # Render provides this
+    SECRET_KEY=os.getenv("FLASK_SECRET_KEY", "fallback-secret-key"),
+    DATABASE_URL=os.getenv("DATABASE_URL"),
     OPENAI_API_KEY=os.getenv("OPENAI_API_KEY")
 )
 
@@ -44,23 +44,28 @@ class Medication(Base):
     frequency = Column(String(50))
     created_at = Column(DateTime, default=datetime.utcnow)
 
-# Database Connection
+# Database Connection with Robust SSL Handling
 def create_db_engine():
-    max_retries = 3
-    retry_delay = 5
+    max_retries = 5
+    retry_delay = 3
     
     db_url = app.config['DATABASE_URL']
     
-    # Fix URL format
+    # Ensure proper URL format
     if db_url.startswith('postgres://'):
         db_url = db_url.replace('postgres://', 'postgresql://', 1)
     
-    # Ensure SSL
+    # Add SSL parameters if not present
     if '?sslmode=' not in db_url.lower():
-        db_url += '?sslmode=require'
+        separator = '?' if '?' not in db_url else '&'
+        db_url += f"{separator}sslmode=require"
     
     for attempt in range(max_retries):
         try:
+            # Test direct connection first
+            test_direct_connection()
+            
+            # Create SQLAlchemy engine with explicit SSL context
             engine = create_engine(
                 db_url,
                 connect_args={
@@ -70,6 +75,8 @@ def create_db_engine():
                 },
                 pool_pre_ping=True,
                 pool_recycle=300,
+                pool_size=5,
+                max_overflow=10,
                 echo=True  # For debugging
             )
             
@@ -77,16 +84,44 @@ def create_db_engine():
             with engine.connect() as conn:
                 conn.execute(text("SELECT 1"))
             
-            logger.info("✅ Database connected successfully")
+            logger.info("✅ Database connection established successfully")
             return engine
             
         except Exception as e:
-            logger.error(f"Attempt {attempt+1} failed: {str(e)}")
+            logger.error(f"Attempt {attempt + 1} failed: {str(e)}")
             if attempt < max_retries - 1:
                 time.sleep(retry_delay)
                 continue
-            logger.critical("Failed to connect to database")
+            logger.critical("Failed to connect to database after multiple attempts")
             raise RuntimeError("Database connection failed")
+
+def test_direct_connection():
+    """Test direct psycopg2 connection with SSL"""
+    try:
+        db_url = urlparse(app.config['DATABASE_URL'])
+        
+        # Force postgresql:// scheme
+        db_url_str = app.config['DATABASE_URL'].replace(
+            'postgres://', 'postgresql://', 1
+        )
+        
+        # Connect with explicit SSL
+        conn = psycopg2.connect(
+            dbname=db_url.path[1:],
+            user=db_url.username,
+            password=db_url.password,
+            host=db_url.hostname,
+            port=db_url.port,
+            sslmode='require',
+            sslrootcert='/etc/ssl/certs/ca-certificates.crt',
+            connect_timeout=5
+        )
+        conn.close()
+        logger.info("✅ Direct PostgreSQL connection successful!")
+        return True
+    except Exception as e:
+        logger.error(f"Direct connection failed: {str(e)}")
+        raise
 
 # Initialize database
 try:
@@ -97,7 +132,7 @@ except Exception as e:
     logger.critical(f"Database initialization failed: {e}")
     exit(1)
 
-# Helper Functions
+# Analysis Functions
 def analyze_symptoms(symptoms, medications):
     """Analyze symptoms using OpenAI"""
     try:
@@ -106,10 +141,10 @@ def analyze_symptoms(symptoms, medications):
         Current medications: {', '.join(medications) if medications else 'None'}
         
         Provide:
-        1. Potential conditions
+        1. Potential conditions (most likely first)
         2. Recommended actions
-        3. Medication interactions to watch for
-        4. When to seek emergency care
+        3. Red flags for emergency care
+        4. Medication interactions to watch for
         """
         
         response = openai.ChatCompletion.create(
@@ -178,8 +213,8 @@ def analyze():
 @app.route('/medications', methods=['GET'])
 def get_medications():
     """Get all medications"""
+    session = Session()
     try:
-        session = Session()
         meds = session.query(Medication).order_by(Medication.name).all()
         return jsonify([{
             "id": m.id,
@@ -197,22 +232,22 @@ def get_medications():
 def health_check():
     """Health check endpoint"""
     try:
+        # Test database connection
         with engine.connect() as conn:
             conn.execute(text("SELECT 1"))
-        return jsonify({"status": "healthy"})
+        
+        # Test OpenAI connection
+        if app.config['OPENAI_API_KEY']:
+            openai.Model.list()
+        
+        return jsonify({
+            "status": "healthy",
+            "database": "connected",
+            "openai": "connected" if app.config['OPENAI_API_KEY'] else "not_configured"
+        })
     except Exception as e:
         logger.error(f"Health check failed: {e}")
-        return jsonify({"status": "unhealthy"}), 500
-
-# Error Handlers
-@app.errorhandler(404)
-def not_found(e):
-    return jsonify({"error": "Not found"}), 404
-
-@app.errorhandler(500)
-def server_error(e):
-    logger.error(f"Server error: {e}")
-    return jsonify({"error": "Internal server error"}), 500
+        return jsonify({"status": "unhealthy", "error": str(e)}), 500
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000, debug=os.getenv("FLASK_DEBUG", False))
