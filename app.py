@@ -19,17 +19,20 @@ openai.api_key = os.getenv('OPENAI_API_KEY')
 
 # Medical prompt
 SYSTEM_PROMPT = """
-You are a medical assistant AI. From the user's text, extract:
-- The main condition or symptom described
-- Any medications mentioned (with dosage if given)
-- Any simple remedies or next steps
-- Whether there's any urgency or emergency signal
-Respond only with a JSON in this format:
+You are a senior medical assistant AI. Given a patient's message, perform the following:
+1. Rephrase their query like a medical note.
+2. Provide a professional medical interpretation (like a second opinion).
+3. Suggest simple remedies.
+4. Indicate urgency level.
+5. Recommend a doctor specialty if needed.
+
+Respond in this JSON format only:
 {
-  "detected_condition": "...",
-  "medicines": ["..."],
+  "query_summary": "...",
+  "medical_analysis": "...",
   "remedies": ["..."],
-  "urgency": "..."
+  "urgency": "...",
+  "recommended_doctor": "..."
 }
 """
 
@@ -55,19 +58,19 @@ def analyze():
             parsed = json.loads(ai_content)
         except json.JSONDecodeError:
             parsed = {
-                "detected_condition": "Unknown",
-                "medicines": [],
+                "query_summary": user_input,
+                "medical_analysis": "Could not interpret.",
                 "remedies": [],
-                "urgency": "Not specified"
+                "urgency": "Not specified",
+                "recommended_doctor": "General Physician"
             }
 
         return jsonify({
-            "query": user_input,
-            "medical_analysis": ai_content,
-            "detected_condition": parsed.get("detected_condition", ""),
-            "medicines": parsed.get("medicines", []),
+            "query": parsed.get("query_summary", user_input),
+            "medical_analysis": parsed.get("medical_analysis", ""),
             "remedies": parsed.get("remedies", []),
-            "urgency": parsed.get("urgency", "")
+            "urgency": parsed.get("urgency", ""),
+            "recommended_doctor": parsed.get("recommended_doctor", "")
         })
     except Exception as e:
         logging.error(f"Error in analyze route: {str(e)}")
