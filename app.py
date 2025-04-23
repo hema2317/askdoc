@@ -111,6 +111,23 @@ def analyze():
         finally:
             conn.close()
 
+    # Fetch doctors if location and specialty provided
+    if location and parsed.get("suggested_doctor"):
+        try:
+            doc_response = requests.get(
+                "https://maps.googleapis.com/maps/api/place/nearbysearch/json",
+                params={
+                    "location": f"{location.get('lat')},{location.get('lng')}",
+                    "radius": 5000,
+                    "keyword": f"{parsed.get('suggested_doctor')} doctor",
+                    "key": GOOGLE_API_KEY
+                }
+            )
+            parsed["doctors"] = doc_response.json().get("results", [])[:5]
+        except Exception as e:
+            logger.error(f"Google API error: {e}")
+            parsed["doctors"] = []
+
     return jsonify(parsed), 200
 
 @app.route("/api/doctors", methods=["GET"])
