@@ -31,25 +31,25 @@ def get_db_connection():
         logger.error(f"Database connection failed: {e}")
         return None
 
-def generate_openai_response(symptoms):
+def generate_openai_response(symptoms, language, profile):
     prompt = f"""
-You are a professional medical assistant. Given the following symptoms:
-
+You are a professional medical assistant. Respond in this language: {language}. The user has this profile: {profile}.
+Given the following symptoms:
 "{symptoms}"
 
-1. Identify the likely medical condition or issue.
-2. Recommend simple remedies if applicable.
+1. Identify the likely medical condition.
+2. Recommend simple remedies.
 3. Highlight if the situation requires urgent care.
 4. Suggest a relevant medical specialist.
 5. If any medicine is mentioned, extract it.
-6. Return everything in a structured JSON with fields: detected_condition, medical_analysis, remedies (array), urgency, suggested_doctor, medicines (array)
+6. Return structured JSON with: detected_condition, medical_analysis, remedies (array), urgency, suggested_doctor, medicines (array)
 """
 
     try:
         response = openai.ChatCompletion.create(
             model="gpt-3.5-turbo",
             messages=[
-                {"role": "system", "content": "You are a helpful health assistant."},
+                {"role": "system", "content": "You are a helpful multilingual health assistant."},
                 {"role": "user", "content": prompt}
             ],
             temperature=0.4
@@ -79,10 +79,13 @@ def analyze():
     data = request.json
     symptoms = data.get("symptoms", "")
     location = data.get("location", {})
+    language = data.get("language", "English")
+    profile = data.get("profile", "")
+
     if not symptoms:
         return jsonify({"error": "Symptoms required"}), 400
 
-    ai_raw_reply = generate_openai_response(symptoms)
+    ai_raw_reply = generate_openai_response(symptoms, language, profile)
     if not ai_raw_reply:
         return jsonify({"error": "Failed to fetch AI analysis"}), 500
 
@@ -162,6 +165,34 @@ def get_doctors():
     except Exception as e:
         logger.error(f"Google Places API error: {e}")
         return jsonify({"doctors": []}), 500
+
+@app.route("/appointments", methods=["POST"])
+def book_appointment():
+    data = request.json
+    name = data.get("name")
+    doctor = data.get("doctor")
+    date = data.get("date")
+
+    if not all([name, doctor, date]):
+        return jsonify({"error": "Missing name, doctor or date"}), 400
+
+    conn = get_db_connection()
+    if conn:
+        try:
+            cursor = conn.cursor()
+            cursor.execute("""
+                INSERT INTO appointments (patient_name, doctor_name, appointment_date, created_at)
+                VALUES (%s, %s, %s, %s)
+            """, (name, doctor, date, datetime.utcnow()))
+            conn.commit()
+            cursor.close()
+        except Exception as e:
+            logger.error(f"DB insert error: {e}")
+            return jsonify({"error": "Failed to book appointment"}), 500
+        finally:
+            conn.close()
+
+    return jsonify({"status": "Appointment booked"})
 
 @app.route("/health", methods=["GET"])
 def health():
