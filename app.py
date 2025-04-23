@@ -25,6 +25,8 @@ You are a senior medical assistant AI. Given a patient's message, perform the fo
 3. Suggest simple remedies.
 4. Indicate urgency level.
 5. Recommend a doctor specialty if needed.
+6. Extract any mentioned medicines with dosage and time.
+7. Generate a concise medical history summary in 1-2 bullet points for doctor use.
 
 Respond in this JSON format only:
 {
@@ -32,7 +34,9 @@ Respond in this JSON format only:
   "medical_analysis": "...",
   "remedies": ["..."],
   "urgency": "...",
-  "recommended_doctor": "..."
+  "recommended_doctor": "...",
+  "medicines": ["..."],
+  "history_summary": ["..."]
 }
 """
 
@@ -62,7 +66,9 @@ def analyze():
                 "medical_analysis": "Could not interpret.",
                 "remedies": [],
                 "urgency": "Not specified",
-                "recommended_doctor": "General Physician"
+                "recommended_doctor": "General Physician",
+                "medicines": [],
+                "history_summary": []
             }
 
         return jsonify({
@@ -70,7 +76,9 @@ def analyze():
             "medical_analysis": parsed.get("medical_analysis", ""),
             "remedies": parsed.get("remedies", []),
             "urgency": parsed.get("urgency", ""),
-            "recommended_doctor": parsed.get("recommended_doctor", "")
+            "recommended_doctor": parsed.get("recommended_doctor", ""),
+            "medicines": parsed.get("medicines", []),
+            "history_summary": parsed.get("history_summary", [])
         })
     except Exception as e:
         logging.error(f"Error in analyze route: {str(e)}")
