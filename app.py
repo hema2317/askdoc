@@ -1,90 +1,131 @@
 import os
-import psycopg2
-from psycopg2 import OperationalError
+import json
+import logging
+from datetime import datetime
 from flask import Flask, request, jsonify
 from flask_cors import CORS
-import time
-import logging
 import openai
-import json
-from datetime import datetime
-
-logging.getLogger('flask_cors').level = logging.DEBUG
+import psycopg2
+from psycopg2 import sql, OperationalError
 
 app = Flask(__name__)
-CORS(app, origins=["*"])
+CORS(app)
 
-# OpenAI setup
-openai.api_key = os.getenv('OPENAI_API_KEY')
+# Logging setup
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
-# Medical prompt
-SYSTEM_PROMPT = """
-You are a senior medical assistant AI. Given a patient's message, perform the following:
-1. Rephrase their query like a medical note.
-2. Provide a professional medical interpretation (like a second opinion).
-3. Suggest simple remedies.
-4. Indicate urgency level.
-5. Recommend a doctor specialty if needed.
-6. Extract any mentioned medicines with dosage and time.
-7. Generate a concise medical history summary in 1-2 bullet points for doctor use.
+# Environment Variables
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+DATABASE_URL = os.getenv("DATABASE_URL")
+openai.api_key = OPENAI_API_KEY
 
-Respond in this JSON format only:
-{
-  "query_summary": "...",
-  "medical_analysis": "...",
-  "remedies": ["..."],
-  "urgency": "...",
-  "recommended_doctor": "...",
-  "medicines": ["..."],
-  "history_summary": ["..."]
-}
+# --- Helper Functions ---
+def get_db_connection():
+    try:
+        conn = psycopg2.connect(DATABASE_URL, sslmode='require')
+        return conn
+    except OperationalError as e:
+        logger.error(f"Database connection failed: {e}")
+        return None
+
+def generate_openai_response(symptoms):
+    prompt = f"""
+You are a professional medical assistant. Given the following symptoms:
+
+"{symptoms}"
+
+1. Identify the likely medical condition or issue.
+2. Recommend simple remedies if applicable.
+3. Highlight if the situation requires urgent care.
+4. Suggest a relevant medical specialist.
+5. If any medicine is mentioned, extract it.
+6. Return everything in a structured JSON with fields: detected_condition, medical_analysis, remedies (array), urgency, suggested_doctor, medicines (array)
 """
 
-@app.route('/analyze', methods=['POST'])
-def analyze():
     try:
-        data = request.get_json()
-        user_input = data.get("symptoms", "")
-
-        messages = [
-            {"role": "system", "content": SYSTEM_PROMPT},
-            {"role": "user", "content": user_input}
-        ]
-
         response = openai.ChatCompletion.create(
             model="gpt-3.5-turbo",
-            messages=messages,
-            temperature=0.3
+            messages=[
+                {"role": "system", "content": "You are a helpful health assistant."},
+                {"role": "user", "content": prompt}
+            ],
+            temperature=0.4
         )
-
-        ai_content = response['choices'][0]['message']['content']
-        try:
-            parsed = json.loads(ai_content)
-        except json.JSONDecodeError:
-            parsed = {
-                "query_summary": user_input,
-                "medical_analysis": "Could not interpret.",
-                "remedies": [],
-                "urgency": "Not specified",
-                "recommended_doctor": "General Physician",
-                "medicines": [],
-                "history_summary": []
-            }
-
-        return jsonify({
-            "query": parsed.get("query_summary", user_input),
-            "medical_analysis": parsed.get("medical_analysis", ""),
-            "remedies": parsed.get("remedies", []),
-            "urgency": parsed.get("urgency", ""),
-            "recommended_doctor": parsed.get("recommended_doctor", ""),
-            "medicines": parsed.get("medicines", []),
-            "history_summary": parsed.get("history_summary", [])
-        })
+        reply = response['choices'][0]['message']['content']
+        return reply
     except Exception as e:
-        logging.error(f"Error in analyze route: {str(e)}")
-        return jsonify({"error": "Something went wrong.", "details": str(e)}), 500
+        logger.error(f"OpenAI error: {e}")
+        return None
 
-@app.route('/health', methods=['GET'])
+def parse_openai_json(reply):
+    try:
+        return json.loads(reply)
+    except json.JSONDecodeError:
+        return {
+            "medical_analysis": reply,
+            "remedies": [],
+            "urgency": None,
+            "medicines": [],
+            "suggested_doctor": "general",
+            "detected_condition": None
+        }
+
+# --- API Routes ---
+@app.route("/analyze", methods=["POST"])
+def analyze():
+    data = request.json
+    symptoms = data.get("symptoms", "")
+    location = data.get("location", {})
+    if not symptoms:
+        return jsonify({"error": "Symptoms required"}), 400
+
+    ai_raw_reply = generate_openai_response(symptoms)
+    if not ai_raw_reply:
+        return jsonify({"error": "Failed to fetch AI analysis"}), 500
+
+    parsed = parse_openai_json(ai_raw_reply)
+    parsed["query"] = symptoms
+
+    # Save history in DB
+    conn = get_db_connection()
+    if conn:
+        try:
+            cursor = conn.cursor()
+            cursor.execute("""
+                INSERT INTO medical_analyses (query, analysis, detected_condition, medicines, created_at)
+                VALUES (%s, %s, %s, %s, %s)
+            """, (
+                symptoms,
+                parsed.get("medical_analysis"),
+                parsed.get("detected_condition"),
+                json.dumps(parsed.get("medicines", [])),
+                datetime.utcnow()
+            ))
+            conn.commit()
+            cursor.close()
+        except Exception as e:
+            logger.error(f"DB insert error: {e}")
+        finally:
+            conn.close()
+
+    return jsonify(parsed), 200
+
+@app.route("/api/doctors", methods=["GET"])
+def get_doctors():
+    lat = request.args.get("lat")
+    lng = request.args.get("lng")
+    specialty = request.args.get("specialty", "general")
+
+    # Mock response
+    return jsonify({
+        "doctors": [
+            {"name": f"Dr. Smith ({specialty.title()})", "phone": "123-456-7890", "rating": 4.6, "address": "123 Main St"},
+            {"name": f"Dr. Patel ({specialty.title()})", "phone": "987-654-3210", "rating": 4.4, "address": "456 Oak Ave"}
+        ]
+    })
+
+@app.route("/health", methods=["GET"])
 def health():
     return jsonify({"status": "ok"})
 
