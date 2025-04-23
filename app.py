@@ -32,20 +32,30 @@ def get_db_connection():
         return None
 
 def generate_openai_response(symptoms, language, profile):
-    prompt = f"""
+prompt = f"""
 You are a professional medical assistant. Respond in this language: {language}. The user has this profile: {profile}.
 Given the following symptoms:
 "{symptoms}"
 
-1. Identify the likely medical condition.
-2. Explain why this condition may be occurring in this specific patient (consider age, profile, habits, chronic diseases, etc.).
-3. Recommend simple remedies or next steps.
-4. Highlight if the situation requires urgent care.
-5. Suggest a relevant medical specialist.
-6. If any medicine is mentioned, extract it.
-7. Return structured JSON with: detected_condition, medical_analysis, root_cause, remedies (array), urgency, suggested_doctor, medicines (array)
-"""
+Please analyze the situation in detail by:
 
+1. Identifying the likely medical condition or physiological issue.
+2. Explaining *why* this condition is likely happening based on patient profile, medication, dosage, food habits, or known health issues (reasoning required).
+3. Suggesting practical remedies or adjustments the user can make at home.
+4. Highlighting if the situation requires urgent care or follow-up.
+5. Recommending the most relevant type of doctor or specialist to consult.
+6. Extracting and listing any medications mentioned.
+7. Returning your answer in structured JSON:
+{
+  "detected_condition": "...",
+  "medical_analysis": "...",
+  "root_cause": "...",   # This is the deep reasoning
+  "remedies": ["...", "..."],
+  "urgency": "low | moderate | high",
+  "suggested_doctor": "...",
+  "medicines": ["..."]
+}
+"""
     try:
         response = openai.ChatCompletion.create(
             model="gpt-3.5-turbo",
