@@ -32,7 +32,7 @@ def get_db_connection():
         return None
 
 def generate_openai_response(symptoms, language, profile):
-prompt = f"""
+    prompt = f"""
 You are a professional medical assistant. Respond in this language: {language}. The user has this profile: {profile}.
 Given the following symptoms:
 "{symptoms}"
@@ -46,15 +46,15 @@ Please analyze the situation in detail by:
 5. Recommending the most relevant type of doctor or specialist to consult.
 6. Extracting and listing any medications mentioned.
 7. Returning your answer in structured JSON:
-{
+{{
   "detected_condition": "...",
   "medical_analysis": "...",
-  "root_cause": "...",   # This is the deep reasoning
+  "root_cause": "...",   
   "remedies": ["...", "..."],
   "urgency": "low | moderate | high",
   "suggested_doctor": "...",
   "medicines": ["..."]
-}
+}}
 """
     try:
         response = openai.ChatCompletion.create(
