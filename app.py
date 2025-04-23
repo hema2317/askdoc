@@ -38,11 +38,12 @@ Given the following symptoms:
 "{symptoms}"
 
 1. Identify the likely medical condition.
-2. Recommend simple remedies.
-3. Highlight if the situation requires urgent care.
-4. Suggest a relevant medical specialist.
-5. If any medicine is mentioned, extract it.
-6. Return structured JSON with: detected_condition, medical_analysis, remedies (array), urgency, suggested_doctor, medicines (array)
+2. Explain why this condition may be occurring in this specific patient (consider age, profile, habits, chronic diseases, etc.).
+3. Recommend simple remedies or next steps.
+4. Highlight if the situation requires urgent care.
+5. Suggest a relevant medical specialist.
+6. If any medicine is mentioned, extract it.
+7. Return structured JSON with: detected_condition, medical_analysis, root_cause, remedies (array), urgency, suggested_doctor, medicines (array)
 """
 
     try:
@@ -66,6 +67,7 @@ def parse_openai_json(reply):
     except json.JSONDecodeError:
         return {
             "medical_analysis": reply,
+            "root_cause": "Unknown due to parsing error",
             "remedies": [],
             "urgency": None,
             "medicines": [],
