@@ -136,7 +136,7 @@ def get_doctors():
         doctors = [
             {
                 "name": r.get("name"),
-                "phone": "N/A",
+                "phone": r.get("formatted_phone_number", "N/A"),
                 "rating": r.get("rating"),
                 "address": r.get("vicinity")
             } for r in results[:10]
@@ -149,6 +149,10 @@ def get_doctors():
 @app.route("/health", methods=["GET"])
 def health():
     return jsonify({"status": "ok"})
+
+@app.route("/emergency", methods=["GET"])
+def emergency():
+    return jsonify({"call": "911"})
 
 if __name__ == '__main__':
     app.run(debug=True)
