@@ -87,14 +87,38 @@ def analyze():
     if not symptoms:
         return jsonify({"error": "Symptoms required"}), 400
 
-    ai_raw_reply = generate_openai_response(symptoms, language, profile)
-    if not ai_raw_reply:
-        return jsonify({"error": "Failed to fetch AI analysis"}), 500
+    # OpenAI prompt with explanation ("root cause")
+    prompt = f"""
+You are a professional medical assistant. Respond in this language: {language}. The user has this profile: {profile}.
+Given the following symptoms:
+"{symptoms}"
 
-    parsed = parse_openai_json(ai_raw_reply)
-    parsed["query"] = symptoms
+1. Identify the likely medical condition.
+2. Explain why this condition may be occurring in this specific patient (consider age, profile, habits, chronic diseases, etc.).
+3. Recommend simple remedies or next steps.
+4. Highlight if the situation requires urgent care.
+5. Suggest a relevant medical specialist.
+6. If any medicine is mentioned, extract it.
+7. Return structured JSON with: detected_condition, medical_analysis, root_cause, remedies (array), urgency, suggested_doctor, medicines (array)
+"""
 
-    # Save history in DB
+    try:
+        response = openai.ChatCompletion.create(
+            model="gpt-3.5-turbo",
+            messages=[
+                {"role": "system", "content": "You are a helpful multilingual health assistant."},
+                {"role": "user", "content": prompt}
+            ],
+            temperature=0.4
+        )
+        reply = response['choices'][0]['message']['content']
+        parsed = json.loads(reply)
+        parsed["query"] = symptoms
+    except Exception as e:
+        logger.error(f"OpenAI error or JSON parse error: {e}")
+        return jsonify({"error": "AI analysis failed"}), 500
+
+    # Save to database
     conn = get_db_connection()
     if conn:
         try:
@@ -116,7 +140,7 @@ def analyze():
         finally:
             conn.close()
 
-    # Fetch doctors if location and specialty provided
+    # Fetch nearby doctors
     if location and parsed.get("suggested_doctor"):
         try:
             doc_response = requests.get(
