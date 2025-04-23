@@ -7,6 +7,7 @@ from flask_cors import CORS
 import openai
 import psycopg2
 from psycopg2 import sql, OperationalError
+import requests
 
 app = Flask(__name__)
 CORS(app)
@@ -18,6 +19,7 @@ logger = logging.getLogger(__name__)
 # Environment Variables
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 DATABASE_URL = os.getenv("DATABASE_URL")
+GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")
 openai.api_key = OPENAI_API_KEY
 
 # --- Helper Functions ---
@@ -117,13 +119,32 @@ def get_doctors():
     lng = request.args.get("lng")
     specialty = request.args.get("specialty", "general")
 
-    # Mock response
-    return jsonify({
-        "doctors": [
-            {"name": f"Dr. Smith ({specialty.title()})", "phone": "123-456-7890", "rating": 4.6, "address": "123 Main St"},
-            {"name": f"Dr. Patel ({specialty.title()})", "phone": "987-654-3210", "rating": 4.4, "address": "456 Oak Ave"}
+    if not lat or not lng or not GOOGLE_API_KEY:
+        return jsonify({"error": "Missing required parameters or API key"}), 400
+
+    try:
+        response = requests.get(
+            "https://maps.googleapis.com/maps/api/place/nearbysearch/json",
+            params={
+                "location": f"{lat},{lng}",
+                "radius": 5000,
+                "keyword": f"{specialty} doctor",
+                "key": GOOGLE_API_KEY
+            }
+        )
+        results = response.json().get("results", [])
+        doctors = [
+            {
+                "name": r.get("name"),
+                "phone": "N/A",
+                "rating": r.get("rating"),
+                "address": r.get("vicinity")
+            } for r in results[:10]
         ]
-    })
+        return jsonify({"doctors": doctors})
+    except Exception as e:
+        logger.error(f"Google Places API error: {e}")
+        return jsonify({"doctors": []}), 500
 
 @app.route("/health", methods=["GET"])
 def health():
