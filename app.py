@@ -8,6 +8,7 @@ import openai
 import psycopg2
 from psycopg2 import sql, OperationalError
 import requests
+import base64
 
 app = Flask(__name__)
 CORS(app)
@@ -20,6 +21,7 @@ logger = logging.getLogger(__name__)
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 DATABASE_URL = os.getenv("DATABASE_URL")
 GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")
+GOOGLE_VISION_API_KEY = os.getenv("GOOGLE_VISION_API_KEY")
 openai.api_key = OPENAI_API_KEY
 
 # --- Helper Functions ---
@@ -84,6 +86,18 @@ def parse_openai_json(reply):
             "suggested_doctor": "general",
             "detected_condition": None
         }
+
+def extract_lab_results(text):
+    """Extract key-value pairs from lab report text (e.g., 'Glucose: 100 mg/dL')."""
+    lines = text.split('\n')
+    results = []
+    for line in lines:
+        match = line.strip().match(r'^([\w\s]+):\s*([\d.]+.*)$')
+        if match:
+            test_name = match.group(1).strip()
+            test_value = match.group(2).strip()
+            results.append({"test": test_name, "value": test_value})
+    return results
 
 # --- API Routes ---
 @app.route("/analyze", methods=["POST"])
@@ -229,6 +243,78 @@ def book_appointment():
             conn.close()
 
     return jsonify({"status": "Appointment booked"})
+
+@app.route("/lab-report", methods=["POST"])
+def analyze_lab_report():
+    data = request.json
+    image_base64 = data.get("image_base64")
+
+    if not image_base64:
+        return jsonify({"error": "Missing image_base64 data"}), 400
+
+    # Call Google Vision API to extract text
+    try:
+        vision_response = requests.post(
+            f"https://vision.googleapis.com/v1/images:annotate?key={GOOGLE_VISION_API_KEY}",
+            json={
+                "requests": [
+                    {
+                        "image": {
+                            "content": image_base64
+                        },
+                        "features": [
+                            {
+                                "type": "TEXT_DETECTION"
+                            }
+                        ]
+                    }
+                ]
+            }
+        )
+        vision_data = vision_response.json()
+        extracted_text = vision_data["responses"][0].get("fullTextAnnotation", {}).get("text", "No text detected")
+    except Exception as e:
+        logger.error(f"Google Vision API error: {e}")
+        return jsonify({"error": "Failed to process image with Vision API"}), 500
+
+    # Analyze extracted text to find key-value pairs (e.g., "Glucose: 100 mg/dL")
+    lab_results = []
+    lines = extracted_text.split('\n')
+    for line in lines:
+        match = re.match(r'^([\w\s]+):\s*([\d.]+.*)$', line.strip())
+        if match:
+            test_name = match.group(1).strip()
+            test_value = match.group(2).strip()
+            lab_results.append({"test": test_name, "value": test_value})
+
+    # Prepare response
+    response_data = {
+        "extracted_text": extracted_text,
+        "lab_results": lab_results,
+        "timestamp": datetime.utcnow().isoformat()
+    }
+
+    # Save to database
+    conn = get_db_connection()
+    if conn:
+        try:
+            cursor = conn.cursor()
+            cursor.execute("""
+                INSERT INTO lab_reports (extracted_text, lab_results, created_at)
+                VALUES (%s, %s, %s)
+            """, (
+                extracted_text,
+                json.dumps(lab_results),
+                datetime.utcnow()
+            ))
+            conn.commit()
+            cursor.close()
+        except Exception as e:
+            logger.error(f"DB insert error: {e}")
+        finally:
+            conn.close()
+
+    return jsonify(response_data), 200
 
 @app.route("/health", methods=["GET"])
 def health():
