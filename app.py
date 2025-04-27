@@ -6,14 +6,12 @@ from flask import Flask, request, jsonify
 from flask_cors import CORS
 import openai
 import psycopg2
-from psycopg2 import sql, OperationalError
+from psycopg2 import OperationalError
 import requests
 import base64
-import re  # <- (You were using re.match without importing re)
+import re
 
 app = Flask(__name__)
-
-# 🚨 Fixed CORS setup
 CORS(app, resources={r"/*": {"origins": "*"}})
 
 # Logging setup
@@ -30,50 +28,9 @@ openai.api_key = OPENAI_API_KEY
 # --- Helper Functions ---
 def get_db_connection():
     try:
-        conn = psycopg2.connect(DATABASE_URL, sslmode='require')
-        return conn
+        return psycopg2.connect(DATABASE_URL, sslmode='require')
     except OperationalError as e:
         logger.error(f"Database connection failed: {e}")
-        return None
-
-def generate_openai_response(symptoms, language, profile):
-    prompt = f"""
-You are a professional medical assistant. Respond in this language: {language}. The user has this profile: {profile}.
-Given the following symptoms:
-"{symptoms}"
-
-Please analyze the situation in detail by:
-
-1. Identifying the likely medical condition or physiological issue.
-2. Explaining *why* this condition is likely happening based on patient profile, medication, dosage, food habits, or known health issues (reasoning required).
-3. Suggesting practical remedies or adjustments the user can make at home.
-4. Highlighting if the situation requires urgent care or follow-up.
-5. Recommending the most relevant type of doctor or specialist to consult.
-6. Extracting and listing any medications mentioned.
-7. Returning your answer in structured JSON:
-{{
-  "detected_condition": "...",
-  "medical_analysis": "...",
-  "root_cause": "...",   
-  "remedies": ["...", "..."],
-  "urgency": "low | moderate | high",
-  "suggested_doctor": "...",
-  "medicines": ["..."]
-}}
-"""
-    try:
-        response = openai.ChatCompletion.create(
-            model="gpt-3.5-turbo",
-            messages=[
-                {"role": "system", "content": "You are a helpful multilingual health assistant."},
-                {"role": "user", "content": prompt}
-            ],
-            temperature=0.4
-        )
-        reply = response['choices'][0]['message']['content']
-        return reply
-    except Exception as e:
-        logger.error(f"OpenAI error: {e}")
         return None
 
 def parse_openai_json(reply):
@@ -108,29 +65,28 @@ You are a professional medical assistant. Respond in this language: {language}. 
 Given the following symptoms:
 "{symptoms}"
 
-1. Identify the likely medical condition.
-2. Explain why this condition may be occurring in this specific patient (consider age, profile, habits, chronic diseases, etc.).
-3. Recommend simple remedies or next steps.
-4. Highlight if the situation requires urgent care.
-5. Suggest a relevant medical specialist.
-6. If any medicine is mentioned, extract it.
-7. Return structured JSON with: detected_condition, medical_analysis, root_cause, remedies (array), urgency, suggested_doctor, medicines (array)
+Return structured JSON including:
+- detected_condition
+- medical_analysis
+- root_cause
+- remedies (array)
+- urgency (low/moderate/high)
+- suggested_doctor
+- medicines (array)
 """
 
     try:
         response = openai.ChatCompletion.create(
             model="gpt-3.5-turbo",
-            messages=[
-                {"role": "system", "content": "You are a helpful multilingual health assistant."},
-                {"role": "user", "content": prompt}
-            ],
-            temperature=0.4
+            messages=[{"role": "system", "content": "You are a helpful multilingual health assistant."},
+                      {"role": "user", "content": prompt}],
+            temperature=0.4,
         )
         reply = response['choices'][0]['message']['content']
-        parsed = json.loads(reply)
+        parsed = parse_openai_json(reply)
         parsed["query"] = symptoms
     except Exception as e:
-        logger.error(f"OpenAI error or JSON parse error: {e}")
+        logger.error(f"OpenAI error: {e}")
         return jsonify({"error": "AI analysis failed"}), 500
 
     # Save to database
@@ -151,7 +107,7 @@ Given the following symptoms:
             conn.commit()
             cursor.close()
         except Exception as e:
-            logger.error(f"DB insert error: {e}")
+            logger.error(f"Database insert error: {e}")
         finally:
             conn.close()
 
@@ -173,6 +129,7 @@ Given the following symptoms:
             parsed["doctors"] = []
 
     return jsonify(parsed), 200
+
 @app.route("/vision", methods=["POST"])
 def vision_ocr():
     data = request.json
@@ -187,20 +144,14 @@ def vision_ocr():
             json={
                 "requests": [
                     {
-                        "image": {
-                            "content": image_base64
-                        },
-                        "features": [
-                            {
-                                "type": "DOCUMENT_TEXT_DETECTION"
-                            }
-                        ]
+                        "image": {"content": image_base64},
+                        "features": [{"type": "DOCUMENT_TEXT_DETECTION"}]
                     }
                 ]
             }
         )
         vision_data = vision_response.json()
-        extracted_text = vision_data["responses"][0].get("fullTextAnnotation", {}).get("text", "No text detected")
+        extracted_text = vision_data.get("responses", [{}])[0].get("fullTextAnnotation", {}).get("text", "No text detected")
         return jsonify({"extracted_text": extracted_text}), 200
 
     except Exception as e:
@@ -213,8 +164,8 @@ def get_doctors():
     lng = request.args.get("lng")
     specialty = request.args.get("specialty", "general")
 
-    if not lat or not lng or not GOOGLE_API_KEY:
-        return jsonify({"error": "Missing required parameters or API key"}), 400
+    if not lat or not lng:
+        return jsonify({"error": "Missing required parameters"}), 400
 
     try:
         response = requests.get(
@@ -233,11 +184,12 @@ def get_doctors():
                 "phone": r.get("formatted_phone_number", "N/A"),
                 "rating": r.get("rating"),
                 "address": r.get("vicinity")
-            } for r in results[:10]
+            }
+            for r in results[:10]
         ]
         return jsonify({"doctors": doctors})
     except Exception as e:
-        logger.error(f"Google Places API error: {e}")
+        logger.error(f"Google API error: {e}")
         return jsonify({"doctors": []}), 500
 
 @app.route("/appointments", methods=["POST"])
@@ -248,7 +200,7 @@ def book_appointment():
     date = data.get("date")
 
     if not all([name, doctor, date]):
-        return jsonify({"error": "Missing name, doctor or date"}), 400
+        return jsonify({"error": "Missing name, doctor, or date"}), 400
 
     conn = get_db_connection()
     if conn:
@@ -266,166 +218,71 @@ def book_appointment():
         finally:
             conn.close()
 
-    return jsonify({"status": "Appointment booked"})
+    return jsonify({"status": "Appointment booked"}), 200
 
 @app.route("/lab-report", methods=["POST"])
 def analyze_lab_report():
     data = request.json
     image_base64 = data.get("image_base64")
-    profile = data.get("profile", {})  # Get profile data from request
 
     if not image_base64:
-        logger.error("Missing image_base64 in request")
         return jsonify({"error": "Missing image_base64 data"}), 400
 
     try:
-        # 1. OCR Step with enhanced configuration
         vision_response = requests.post(
             f"https://vision.googleapis.com/v1/images:annotate?key={GOOGLE_VISION_API_KEY}",
             json={
                 "requests": [
                     {
                         "image": {"content": image_base64},
-                        "features": [{
-                            "type": "DOCUMENT_TEXT_DETECTION",
-                            "model": "builtin/latest"
-                        }],
-                        "imageContext": {
-                            "textDetectionParams": {
-                                "enableTextDetectionConfidenceScore": True
-                            }
-                        }
+                        "features": [{"type": "DOCUMENT_TEXT_DETECTION"}]
                     }
                 ]
-            },
-            timeout=20
+            }
         )
-        
-        # Add error checking
-        if vision_response.status_code != 200:
-            logger.error(f"Vision API error: {vision_response.text}")
-            return jsonify({"error": "Vision API failed"}), 500
-            
         vision_data = vision_response.json()
 
         if "responses" not in vision_data or not vision_data["responses"]:
-            logger.error("Vision API error: No responses field")
-            return jsonify({"error": "Failed to process image, no response from Vision API"}), 400
+            return jsonify({"error": "Failed to process image, no responses from Vision API"}), 400
 
         extracted_text = vision_data["responses"][0].get("fullTextAnnotation", {}).get("text", "No text detected")
 
-        if not extracted_text.strip() or extracted_text == "No text detected":
-            return jsonify({"error": "No text detected from lab report."}), 400
+        if not extracted_text.strip():
+            return jsonify({"error": "No text detected from lab report"}), 400
 
-        # 2. Clean text from watermarks and noise
-        watermark_patterns = [
-            r"(?i)\b(?:confidential|sample|draft|copy|watermark|©|©.*?)\b",
-            r"\b\d{4}-\d{2}-\d{2}\b",
-            r"Page \d+ of \d+",
-            r"Lab ID:.*?\n",
-            r"Patient ID:.*?\n"
-        ]
-        
-        cleaned_text = extracted_text
-        for pattern in watermark_patterns:
-            cleaned_text = re.sub(pattern, "", cleaned_text)
-        cleaned_text = re.sub(r"\n{3,}", "\n\n", cleaned_text.strip())
-
-        # 3. Parse lab tests with profile context
+        # Send extracted text to OpenAI to parse
         parsing_prompt = f"""
-Extract test names and values from the following lab report text.
-Patient Profile: {json.dumps(profile, indent=2)}
+Extract lab test results from this lab report text:
 
-Text:
-{cleaned_text}
+{extracted_text}
 
-Return only a JSON array like:
+Return JSON array like:
 [
-  {{"test": "Glucose", "value": "110 mg/dL", "units": "mg/dL", "range": "70-99", "status": "high"}},
-  {{"test": "Creatinine", "value": "1.2 mg/dL", "units": "mg/dL", "range": "0.6-1.3", "status": "normal"}}
+  {{"test": "Glucose", "value": "110 mg/dL"}},
+  {{"test": "Creatinine", "value": "1.2 mg/dL"}}
 ]
 """
+
         parsing_response = openai.ChatCompletion.create(
             model="gpt-3.5-turbo",
             messages=[{"role": "user", "content": parsing_prompt}],
-            temperature=0.1,
-        )
-
-        parsing_reply = parsing_response['choices'][0]['message']['content']
-        start = parsing_reply.find('[')
-        end = parsing_reply.rfind(']')
-        lab_results_json = parsing_reply[start:end+1]
-        lab_results = json.loads(lab_results_json)
-
-        # 4. Interpret lab results with medical context
-        interpretation_prompt = f"""
-You are a professional health assistant analyzing results for this patient:
-{json.dumps(profile, indent=2)}
-
-Lab Results:
-{json.dumps(lab_results, indent=2)}
-
-Provide:
-1. Overall health assessment
-2. Analysis of abnormal results considering patient profile
-3. Clinical recommendations
-4. Follow-up suggestions
-
-Return structured JSON like:
-{{
-  "overview": "...",
-  "abnormal_results": [{{"test": "...", "interpretation": "...", "urgency": "low/medium/high", "recommendation": "..."}}],
-  "normal_results": ["..."],
-  "summary": "...",
-  "next_steps": ["..."],
-  "clinical_notes": "..."
-}}
-"""
-        interpretation_response = openai.ChatCompletion.create(
-            model="gpt-3.5-turbo",
-            messages=[{"role": "user", "content": interpretation_prompt}],
             temperature=0.2,
         )
 
-        interpretation_reply = interpretation_response['choices'][0]['message']['content']
-        start = interpretation_reply.find('{')
-        end = interpretation_reply.rfind('}')
-        interpretation_json = interpretation_reply[start:end+1]
-        interpretation = json.loads(interpretation_json)
+        parsing_reply = parsing_response['choices'][0]['message']['content']
+        lab_results_json = parsing_reply[parsing_reply.find('['):parsing_reply.rfind(']') + 1]
+        lab_results = json.loads(lab_results_json)
 
-        # 5. Return result
-        response_data = {
-            "extracted_text": cleaned_text,
+        return jsonify({
+            "extracted_text": extracted_text,
             "lab_results": lab_results,
-            "interpretation": interpretation,
             "timestamp": datetime.utcnow().isoformat()
-        }
-
-        # Save to database if needed
-        if DATABASE_URL:
-            try:
-                conn = psycopg2.connect(DATABASE_URL)
-                cursor = conn.cursor()
-                cursor.execute("""
-                    INSERT INTO lab_reports 
-                    (patient_id, raw_text, analysis, created_at) 
-                    VALUES (%s, %s, %s, %s)
-                    """, 
-                    (profile.get("id"), cleaned_text, json.dumps(response_data), datetime.utcnow())
-                conn.commit()
-                cursor.close()
-            except Exception as db_error:
-                logger.error(f"Database error: {db_error}")
-            finally:
-                if conn:
-                    conn.close()
-
-        return jsonify(response_data), 200
+        }), 200
 
     except Exception as e:
-        logger.error(f"Lab report full analysis error: {e}")
-        return jsonify({"error": "Failed to analyze lab report."}), 500
-        
+        logger.error(f"Lab report analysis failed: {e}")
+        return jsonify({"error": "Failed to analyze lab report"}), 500
+
 @app.route("/health", methods=["GET"])
 def health():
     return jsonify({"status": "ok"})
