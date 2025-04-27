@@ -296,6 +296,12 @@ def analyze_lab_report():
             }
         )
         vision_data = vision_response.json()
+
+        # ✅ Defensive check (INSIDE try block, properly indented)
+        if "responses" not in vision_data or not vision_data["responses"]:
+            logger.error("Vision API error: No responses field")
+            return jsonify({"error": "Failed to process image, no response from Vision API"}), 400
+
         extracted_text = vision_data["responses"][0].get("fullTextAnnotation", {}).get("text", "No text detected")
 
         if not extracted_text.strip() or extracted_text == "No text detected":
@@ -372,7 +378,6 @@ Return structured JSON like:
     except Exception as e:
         logger.error(f"Lab report full analysis error: {e}")
         return jsonify({"error": "Failed to analyze lab report."}), 500
-
 
 @app.route("/health", methods=["GET"])
 def health():
