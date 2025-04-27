@@ -277,6 +277,7 @@ def analyze_lab_report():
         return jsonify({"error": "Missing image_base64 data"}), 400
 
     try:
+        # OCR Step
         vision_response = requests.post(
             f"https://vision.googleapis.com/v1/images:annotate?key={GOOGLE_VISION_API_KEY}",
             json={
@@ -296,45 +297,52 @@ def analyze_lab_report():
         )
         vision_data = vision_response.json()
         extracted_text = vision_data["responses"][0].get("fullTextAnnotation", {}).get("text", "No text detected")
+        
+        if not extracted_text.strip() or extracted_text == "No text detected":
+            return jsonify({"error": "No text detected from lab report."}), 400
+        
+        # 💬 Ask OpenAI to parse the extracted text
+        prompt = f"""
+You are a professional medical assistant.
+
+Given the following extracted lab report text:
+
+{extracted_text}
+
+Extract the important test names and values into structured JSON like this:
+
+[
+  {{"test": "Glucose", "value": "120 mg/dL"}},
+  {{"test": "Creatinine", "value": "1.2 mg/dL"}},
+  ...
+]
+
+Only include real lab test results. Ignore headers or random notes.
+"""
+
+        openai_response = openai.ChatCompletion.create(
+            model="gpt-3.5-turbo",
+            messages=[
+                {"role": "system", "content": "You are a helpful health assistant."},
+                {"role": "user", "content": prompt}
+            ],
+            temperature=0.2,
+        )
+
+        lab_results_text = openai_response['choices'][0]['message']['content']
+        lab_results = json.loads(lab_results_text)
+
+        response_data = {
+            "extracted_text": extracted_text,
+            "lab_results": lab_results,
+            "timestamp": datetime.utcnow().isoformat()
+        }
+
+        return jsonify(response_data), 200
+
     except Exception as e:
-        logger.error(f"Google Vision API error: {e}")
-        return jsonify({"error": "Failed to process image with Vision API"}), 500
-
-    lab_results = []
-    lines = extracted_text.split('\n')
-    for line in lines:
-        match = re.match(r'^([\w\s]+):\s*([\d.]+.*)$', line.strip())
-        if match:
-            test_name = match.group(1).strip()
-            test_value = match.group(2).strip()
-            lab_results.append({"test": test_name, "value": test_value})
-
-    response_data = {
-        "extracted_text": extracted_text,
-        "lab_results": lab_results,
-        "timestamp": datetime.utcnow().isoformat()
-    }
-
-    conn = get_db_connection()
-    if conn:
-        try:
-            cursor = conn.cursor()
-            cursor.execute("""
-                INSERT INTO lab_reports (extracted_text, lab_results, created_at)
-                VALUES (%s, %s, %s)
-            """, (
-                extracted_text,
-                json.dumps(lab_results),
-                datetime.utcnow()
-            ))
-            conn.commit()
-            cursor.close()
-        except Exception as e:
-            logger.error(f"DB insert error: {e}")
-        finally:
-            conn.close()
-
-    return jsonify(response_data), 200
+        logger.error(f"Lab report analysis error: {e}")
+        return jsonify({"error": "Failed to analyze lab report."}), 500
 
 @app.route("/health", methods=["GET"])
 def health():
