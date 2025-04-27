@@ -272,8 +272,10 @@ def book_appointment():
 def analyze_lab_report():
     data = request.json
     image_base64 = data.get("image_base64")
+    profile = data.get("profile", {})  # Get profile data from request
 
     if not image_base64:
+        logger.error("Missing image_base64 in request")
         return jsonify({"error": "Missing image_base64 data"}), 400
 
     try:
@@ -283,21 +285,20 @@ def analyze_lab_report():
             json={
                 "requests": [
                     {
-                        "image": {
-                            "content": image_base64
-                        },
-                        "features": [
-                            {
-                                "type": "DOCUMENT_TEXT_DETECTION"
-                            }
-                        ]
+                        "image": {"content": image_base64},
+                        "features": [{"type": "DOCUMENT_TEXT_DETECTION"}]
                     }
                 ]
             }
         )
+        
+        # Add error checking
+        if vision_response.status_code != 200:
+            logger.error(f"Vision API error: {vision_response.text}")
+            return jsonify({"error": "Vision API failed"}), 500
+            
         vision_data = vision_response.json()
 
-        # ✅ Defensive check (INSIDE try block, properly indented)
         if "responses" not in vision_data or not vision_data["responses"]:
             logger.error("Vision API error: No responses field")
             return jsonify({"error": "Failed to process image, no response from Vision API"}), 400
@@ -307,9 +308,10 @@ def analyze_lab_report():
         if not extracted_text.strip() or extracted_text == "No text detected":
             return jsonify({"error": "No text detected from lab report."}), 400
 
-        # 2. Parse lab tests from extracted text (OpenAI call 1)
+        # 2. Parse lab tests with profile context
         parsing_prompt = f"""
 Extract test names and values from the following lab report text.
+Patient Profile: {json.dumps(profile, indent=2)}
 
 Text:
 {extracted_text}
@@ -320,6 +322,7 @@ Return only a JSON array like:
   {{"test": "Creatinine", "value": "1.2 mg/dL"}}
 ]
 """
+        # Rest of your existing code...
         parsing_response = openai.ChatCompletion.create(
             model="gpt-3.5-turbo",
             messages=[{"role": "user", "content": parsing_prompt}],
