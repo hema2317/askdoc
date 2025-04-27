@@ -297,40 +297,56 @@ def analyze_lab_report():
         )
         vision_data = vision_response.json()
         extracted_text = vision_data["responses"][0].get("fullTextAnnotation", {}).get("text", "No text detected")
-        
+
         if not extracted_text.strip() or extracted_text == "No text detected":
             return jsonify({"error": "No text detected from lab report."}), 400
-        
-        # 💬 Ask OpenAI to parse the extracted text
-        prompt = f"""
-You are a professional medical assistant.
 
-Given the following extracted lab report text:
+        # AI Prompt Step
+        prompt = f"""
+You are a professional health assistant.
+
+Extract test names and their values from this lab report text:
 
 {extracted_text}
 
-Extract the important test names and values into structured JSON like this:
+Return only JSON array like:
 
 [
   {{"test": "Glucose", "value": "120 mg/dL"}},
-  {{"test": "Creatinine", "value": "1.2 mg/dL"}},
-  ...
+  {{"test": "Creatinine", "value": "1.2 mg/dL"}}
 ]
 
-Only include real lab test results. Ignore headers or random notes.
+No extra words. Only valid JSON.
 """
 
         openai_response = openai.ChatCompletion.create(
             model="gpt-3.5-turbo",
             messages=[
-                {"role": "system", "content": "You are a helpful health assistant."},
+                {"role": "system", "content": "You are a helpful AI that formats output cleanly."},
                 {"role": "user", "content": prompt}
             ],
-            temperature=0.2,
+            temperature=0.1,
         )
 
-        lab_results_text = openai_response['choices'][0]['message']['content']
-        lab_results = json.loads(lab_results_text)
+        # Try parsing strictly
+        reply = openai_response['choices'][0]['message']['content']
+
+        # Sometimes GPT adds text like "Here is the result:"
+        # So we clean it smartly
+        reply_cleaned = reply.strip()
+
+        # Find first '[' and last ']' to force extract valid JSON
+        start = reply_cleaned.find('[')
+        end = reply_cleaned.rfind(']')
+        if start != -1 and end != -1:
+            reply_cleaned = reply_cleaned[start:end+1]
+
+        # Parse JSON safely
+        try:
+            lab_results = json.loads(reply_cleaned)
+        except Exception as e:
+            logger.error(f"OpenAI JSON parse error: {e}")
+            return jsonify({"error": "Failed to parse AI response"}), 500
 
         response_data = {
             "extracted_text": extracted_text,
@@ -341,8 +357,9 @@ Only include real lab test results. Ignore headers or random notes.
         return jsonify(response_data), 200
 
     except Exception as e:
-        logger.error(f"Lab report analysis error: {e}")
+        logger.error(f"Lab report full analysis error: {e}")
         return jsonify({"error": "Failed to analyze lab report."}), 500
+
 
 @app.route("/health", methods=["GET"])
 def health():
