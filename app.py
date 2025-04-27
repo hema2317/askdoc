@@ -277,7 +277,7 @@ def analyze_lab_report():
         return jsonify({"error": "Missing image_base64 data"}), 400
 
     try:
-        # OCR Step
+        # 1. OCR Step
         vision_response = requests.post(
             f"https://vision.googleapis.com/v1/images:annotate?key={GOOGLE_VISION_API_KEY}",
             json={
@@ -301,56 +301,69 @@ def analyze_lab_report():
         if not extracted_text.strip() or extracted_text == "No text detected":
             return jsonify({"error": "No text detected from lab report."}), 400
 
-        # AI Prompt Step
-        prompt = f"""
-You are a professional health assistant.
+        # 2. Parse lab tests from extracted text (OpenAI call 1)
+        parsing_prompt = f"""
+Extract test names and values from the following lab report text.
 
-Extract test names and their values from this lab report text:
-
+Text:
 {extracted_text}
 
-Return only JSON array like:
-
+Return only a JSON array like:
 [
-  {{"test": "Glucose", "value": "120 mg/dL"}},
+  {{"test": "Glucose", "value": "110 mg/dL"}},
   {{"test": "Creatinine", "value": "1.2 mg/dL"}}
 ]
-
-No extra words. Only valid JSON.
 """
-
-        openai_response = openai.ChatCompletion.create(
+        parsing_response = openai.ChatCompletion.create(
             model="gpt-3.5-turbo",
-            messages=[
-                {"role": "system", "content": "You are a helpful AI that formats output cleanly."},
-                {"role": "user", "content": prompt}
-            ],
+            messages=[{"role": "user", "content": parsing_prompt}],
             temperature=0.1,
         )
 
-        # Try parsing strictly
-        reply = openai_response['choices'][0]['message']['content']
+        parsing_reply = parsing_response['choices'][0]['message']['content']
+        start = parsing_reply.find('[')
+        end = parsing_reply.rfind(']')
+        lab_results_json = parsing_reply[start:end+1]
+        lab_results = json.loads(lab_results_json)
 
-        # Sometimes GPT adds text like "Here is the result:"
-        # So we clean it smartly
-        reply_cleaned = reply.strip()
+        # 3. Interpret lab results (OpenAI call 2)
+        interpretation_prompt = f"""
+You are a professional health assistant.
 
-        # Find first '[' and last ']' to force extract valid JSON
-        start = reply_cleaned.find('[')
-        end = reply_cleaned.rfind(']')
-        if start != -1 and end != -1:
-            reply_cleaned = reply_cleaned[start:end+1]
+Here are the lab results:
 
-        # Parse JSON safely
-        try:
-            lab_results = json.loads(reply_cleaned)
-        except Exception as e:
-            logger.error(f"OpenAI JSON parse error: {e}")
-            return jsonify({"error": "Failed to parse AI response"}), 500
+{json.dumps(lab_results, indent=2)}
 
+1. Give a short overall medical overview.
+2. Identify abnormal results and explain what they might indicate.
+3. List normal results separately.
+4. Provide a health summary for the patient's profile.
+
+Return structured JSON like:
+{{
+  "overview": "...",
+  "abnormal_results": [{{"test": "...", "value": "...", "interpretation": "...", "recommendation": "..."}}],
+  "normal_results": [{{"test": "...", "value": "..."}}],
+  "summary": "..."
+}}
+"""
+        interpretation_response = openai.ChatCompletion.create(
+            model="gpt-3.5-turbo",
+            messages=[{"role": "user", "content": interpretation_prompt}],
+            temperature=0.2,
+        )
+
+        interpretation_reply = interpretation_response['choices'][0]['message']['content']
+        start = interpretation_reply.find('{')
+        end = interpretation_reply.rfind('}')
+        interpretation_json = interpretation_reply[start:end+1]
+        interpretation = json.loads(interpretation_json)
+
+        # 4. Return result
         response_data = {
             "extracted_text": extracted_text,
             "lab_results": lab_results,
+            "interpretation": interpretation,
             "timestamp": datetime.utcnow().isoformat()
         }
 
