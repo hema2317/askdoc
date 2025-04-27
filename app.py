@@ -272,14 +272,14 @@ def book_appointment():
 def analyze_lab_report():
     data = request.json
     image_base64 = data.get("image_base64")
-    profile = data.get("profile", {})
+    profile = data.get("profile", {})  # Get profile data from request
 
     if not image_base64:
         logger.error("Missing image_base64 in request")
         return jsonify({"error": "Missing image_base64 data"}), 400
 
     try:
-        # 1. Enhanced OCR with preprocessing hints
+        # 1. OCR Step with enhanced configuration
         vision_response = requests.post(
             f"https://vision.googleapis.com/v1/images:annotate?key={GOOGLE_VISION_API_KEY}",
             json={
@@ -288,143 +288,90 @@ def analyze_lab_report():
                         "image": {"content": image_base64},
                         "features": [{
                             "type": "DOCUMENT_TEXT_DETECTION",
-                            "model": "builtin/latest"  # Use latest OCR model
+                            "model": "builtin/latest"
                         }],
                         "imageContext": {
                             "textDetectionParams": {
-                                "enableTextDetectionConfidenceScore": True,
-                                "advancedOcrOptions": ["legacy_layout"]
+                                "enableTextDetectionConfidenceScore": True
                             }
                         }
                     }
                 ]
             },
-            timeout=30  # Increased timeout for complex images
+            timeout=20
         )
         
+        # Add error checking
         if vision_response.status_code != 200:
             logger.error(f"Vision API error: {vision_response.text}")
-            return jsonify({"error": "Vision API failed to process image"}), 500
+            return jsonify({"error": "Vision API failed"}), 500
             
         vision_data = vision_response.json()
 
-        if not vision_data.get("responses"):
+        if "responses" not in vision_data or not vision_data["responses"]:
             logger.error("Vision API error: No responses field")
-            return jsonify({"error": "Failed to process image"}), 400
+            return jsonify({"error": "Failed to process image, no response from Vision API"}), 400
 
-        # Get full text or fallback to concatenated words
-        full_text_annotation = vision_data["responses"][0].get("fullTextAnnotation", {})
-        if full_text_annotation:
-            extracted_text = full_text_annotation.get("text", "")
-            # Calculate average confidence score
-            confidences = []
-            for page in full_text_annotation.get("pages", []):
-                for block in page.get("blocks", []):
-                    for paragraph in block.get("paragraphs", []):
-                        for word in paragraph.get("words", []):
-                            if "confidence" in word:
-                                confidences.append(word["confidence"])
-            avg_confidence = sum(confidences)/len(confidences) if confidences else 0
-        else:
-            # Fallback to concatenating detected text
-            extracted_text = " ".join([
-                annotation.get("description", "")
-                for annotation in vision_data["responses"][0].get("textAnnotations", [{}])[1:]  # Skip first element (whole text)
-            ])
-            avg_confidence = 0.5  # Default confidence for fallback
+        extracted_text = vision_data["responses"][0].get("fullTextAnnotation", {}).get("text", "No text detected")
 
-        # 2. Text cleaning and watermark removal
-        cleaned_text = extracted_text
-        
-        # Remove common watermarks and non-relevant text
+        if not extracted_text.strip() or extracted_text == "No text detected":
+            return jsonify({"error": "No text detected from lab report."}), 400
+
+        # 2. Clean text from watermarks and noise
         watermark_patterns = [
             r"(?i)\b(?:confidential|sample|draft|copy|watermark|©|©.*?)\b",
-            r"\b\d{4}-\d{2}-\d{2}\b",  # Dates that might be part of watermark
+            r"\b\d{4}-\d{2}-\d{2}\b",
             r"Page \d+ of \d+",
             r"Lab ID:.*?\n",
             r"Patient ID:.*?\n"
         ]
         
+        cleaned_text = extracted_text
         for pattern in watermark_patterns:
             cleaned_text = re.sub(pattern, "", cleaned_text)
-        
-        # Remove excessive whitespace
         cleaned_text = re.sub(r"\n{3,}", "\n\n", cleaned_text.strip())
 
-        # 3. Parse lab tests with enhanced error handling
-        parsing_prompt = f"""You are an expert medical lab analyst. Extract test results from this lab report:
+        # 3. Parse lab tests with profile context
+        parsing_prompt = f"""
+Extract test names and values from the following lab report text.
+Patient Profile: {json.dumps(profile, indent=2)}
 
-PATIENT PROFILE (for reference):
-{json.dumps(profile, indent=2)}
-
-LAB REPORT TEXT:
+Text:
 {cleaned_text}
 
-Instructions:
-1. Extract ALL test names and values
-2. Standardize test names (e.g., "Hb" → "Hemoglobin")
-3. Include units and reference ranges when available
-4. Mark abnormal values based on reference ranges
-5. Ignore any remaining watermarks or headers
-
-Return ONLY valid JSON format:
-{{
-  "results": [
-    {{
-      "test": "Standardized Test Name",
-      "value": "measured value",
-      "units": "unit of measurement",
-      "range": "reference range if available",
-      "status": "normal/abnormal/high/low"
-    }}
-  ],
-  "metadata": {{
-    "confidence": {avg_confidence},
-    "text_length": {len(cleaned_text)},
-    "watermark_detected": {"true" if "watermark" in extracted_text.lower() else "false"}
-  }}
-}}"""
-
+Return only a JSON array like:
+[
+  {{"test": "Glucose", "value": "110 mg/dL", "units": "mg/dL", "range": "70-99", "status": "high"}},
+  {{"test": "Creatinine", "value": "1.2 mg/dL", "units": "mg/dL", "range": "0.6-1.3", "status": "normal"}}
+]
+"""
         parsing_response = openai.ChatCompletion.create(
-            model="gpt-4",  # Use GPT-4 for better extraction
+            model="gpt-3.5-turbo",
             messages=[{"role": "user", "content": parsing_prompt}],
             temperature=0.1,
-            response_format={"type": "json_object"}
         )
 
-        try:
-            lab_results = json.loads(parsing_response.choices[0].message.content)
-            if not lab_results.get("results"):
-                raise ValueError("No results extracted")
-        except (json.JSONDecodeError, ValueError) as e:
-            logger.error(f"Failed to parse lab results: {e}")
-            return jsonify({"error": "Failed to extract lab data", "extracted_text": cleaned_text}), 400
+        parsing_reply = parsing_response['choices'][0]['message']['content']
+        start = parsing_reply.find('[')
+        end = parsing_reply.rfind(']')
+        lab_results_json = parsing_reply[start:end+1]
+        lab_results = json.loads(lab_results_json)
 
-        # 4. Enhanced interpretation with medical context
-        interpretation_prompt = {
-            "role": "system",
-            "content": f"""You are a medical specialist analyzing lab results for this patient:
+        # 4. Interpret lab results with medical context
+        interpretation_prompt = f"""
+You are a professional health assistant analyzing results for this patient:
 {json.dumps(profile, indent=2)}
 
-Consider their medical history when interpreting results."""
-        }
-
-        interpretation_response = openai.ChatCompletion.create(
-            model="gpt-4",
-            messages=[
-                interpretation_prompt,
-                {
-                    "role": "user",
-                    "content": f"""Analyze these lab results:
-{json.dumps(lab_results['results'], indent=2)}
+Lab Results:
+{json.dumps(lab_results, indent=2)}
 
 Provide:
 1. Overall health assessment
-2. Detailed analysis of abnormal results
+2. Analysis of abnormal results considering patient profile
 3. Clinical recommendations
 4. Follow-up suggestions
 
-Return structured JSON with:
+Return structured JSON like:
 {{
   "overview": "...",
   "abnormal_results": [{{"test": "...", "interpretation": "...", "urgency": "low/medium/high", "recommendation": "..."}}],
@@ -432,23 +379,26 @@ Return structured JSON with:
   "summary": "...",
   "next_steps": ["..."],
   "clinical_notes": "..."
-}}"""
-                }
-            ],
-            temperature=0.3,
-            response_format={"type": "json_object"}
+}}
+"""
+        interpretation_response = openai.ChatCompletion.create(
+            model="gpt-3.5-turbo",
+            messages=[{"role": "user", "content": interpretation_prompt}],
+            temperature=0.2,
         )
 
-        interpretation = json.loads(interpretation_response.choices[0].message.content)
+        interpretation_reply = interpretation_response['choices'][0]['message']['content']
+        start = interpretation_reply.find('{')
+        end = interpretation_reply.rfind('}')
+        interpretation_json = interpretation_reply[start:end+1]
+        interpretation = json.loads(interpretation_json)
 
-        # 5. Compile final response
+        # 5. Return result
         response_data = {
             "extracted_text": cleaned_text,
-            "lab_results": lab_results["results"],
+            "lab_results": lab_results,
             "interpretation": interpretation,
-            "confidence": avg_confidence,
-            "timestamp": datetime.utcnow().isoformat(),
-            "metadata": lab_results.get("metadata", {})
+            "timestamp": datetime.utcnow().isoformat()
         }
 
         # Save to database if needed
@@ -463,6 +413,7 @@ Return structured JSON with:
                     """, 
                     (profile.get("id"), cleaned_text, json.dumps(response_data), datetime.utcnow())
                 conn.commit()
+                cursor.close()
             except Exception as db_error:
                 logger.error(f"Database error: {db_error}")
             finally:
@@ -471,16 +422,10 @@ Return structured JSON with:
 
         return jsonify(response_data), 200
 
-    except requests.exceptions.RequestException as e:
-        logger.error(f"API request failed: {e}")
-        return jsonify({"error": "Service temporarily unavailable"}), 503
     except Exception as e:
-        logger.error(f"Lab analysis error: {str(e)}", exc_info=True)
-        return jsonify({
-            "error": "Failed to analyze lab report",
-            "detail": str(e)
-        }), 500
-
+        logger.error(f"Lab report full analysis error: {e}")
+        return jsonify({"error": "Failed to analyze lab report."}), 500
+        
 @app.route("/health", methods=["GET"])
 def health():
     return jsonify({"status": "ok"})
