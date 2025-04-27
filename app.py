@@ -43,6 +43,10 @@ def clean_extracted_text(text):
     cleaned = text
     for pattern in patterns_to_remove:
         cleaned = re.sub(pattern, '', cleaned, flags=re.IGNORECASE)
+
+    # 👉 Add this new line below the loop:
+    cleaned = re.sub(r'Drlogy.*', '', cleaned, flags=re.IGNORECASE)
+
     cleaned = re.sub(r'\n+', '\n', cleaned.strip())
     cleaned = re.sub(r'\s+', ' ', cleaned)
     return cleaned
@@ -138,7 +142,7 @@ def vision_ocr():
                 "requests": [
                     {
                         "image": {"content": image_base64},
-                        "features": [{"type": "DOCUMENT_TEXT_DETECTION"}]
+                        "features": [{"type": "TEXT_DETECTION"}]
                     }
                 ]
             }
@@ -174,7 +178,7 @@ def analyze_lab_report():
                 "requests": [
                     {
                         "image": {"content": image_base64},
-                        "features": [{"type": "DOCUMENT_TEXT_DETECTION"}]
+                        "features": [{"type": "TEXT_DETECTION"}]
                     }
                 ]
             }
