@@ -288,7 +288,7 @@ def analyze_lab_report():
                         },
                         "features": [
                             {
-                                "type": "TEXT_DETECTION"
+                                "type": "DOCUMENT_TEXT_DETECTION"
                             }
                         ]
                     }
