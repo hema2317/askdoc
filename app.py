@@ -192,7 +192,7 @@ def vision_ocr():
                         },
                         "features": [
                             {
-                                "type": "TEXT_DETECTION"
+                                "type": "DOCUMENT_TEXT_DETECTION"
                             }
                         ]
                     }
