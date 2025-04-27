@@ -173,6 +173,39 @@ Given the following symptoms:
             parsed["doctors"] = []
 
     return jsonify(parsed), 200
+@app.route("/vision", methods=["POST"])
+def vision_ocr():
+    data = request.json
+    image_base64 = data.get("image_base64")
+
+    if not image_base64:
+        return jsonify({"error": "Missing image_base64 data"}), 400
+
+    try:
+        vision_response = requests.post(
+            f"https://vision.googleapis.com/v1/images:annotate?key={GOOGLE_VISION_API_KEY}",
+            json={
+                "requests": [
+                    {
+                        "image": {
+                            "content": image_base64
+                        },
+                        "features": [
+                            {
+                                "type": "TEXT_DETECTION"
+                            }
+                        ]
+                    }
+                ]
+            }
+        )
+        vision_data = vision_response.json()
+        extracted_text = vision_data["responses"][0].get("fullTextAnnotation", {}).get("text", "No text detected")
+        return jsonify({"extracted_text": extracted_text}), 200
+
+    except Exception as e:
+        logger.error(f"Google Vision API error: {e}")
+        return jsonify({"error": "Failed to process image with Vision API"}), 500
 
 @app.route("/api/doctors", methods=["GET"])
 def get_doctors():
