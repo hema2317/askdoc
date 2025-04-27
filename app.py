@@ -6,7 +6,7 @@ from flask import Flask, request, jsonify
 from flask_cors import CORS
 import openai
 import psycopg2
-from psycopg2 import OperationalError
+from psycopg2 import sql, OperationalError
 import requests
 import base64
 import re
@@ -28,24 +28,31 @@ openai.api_key = OPENAI_API_KEY
 # --- Helper Functions ---
 def get_db_connection():
     try:
-        return psycopg2.connect(DATABASE_URL, sslmode='require')
+        conn = psycopg2.connect(DATABASE_URL, sslmode='require')
+        return conn
     except OperationalError as e:
         logger.error(f"Database connection failed: {e}")
         return None
 
-def parse_openai_json(reply):
-    try:
-        return json.loads(reply)
-    except json.JSONDecodeError:
-        return {
-            "medical_analysis": reply,
-            "root_cause": "Unknown due to parsing error",
-            "remedies": [],
-            "urgency": None,
-            "medicines": [],
-            "suggested_doctor": "general",
-            "detected_condition": None
-        }
+def clean_extracted_text(text):
+    """Remove common watermark words and unnecessary junk."""
+    patterns_to_remove = [
+        r'\bCONFIDENTIAL\b', 
+        r'\bCOPY\b', 
+        r'\bSAMPLE\b', 
+        r'\bDRAFT\b',
+        r'\bWATERMARK\b',
+        r'©.*?\n',  # any © info
+        r'\d{4}-\d{2}-\d{2}',  # dates
+        r'Page \d+ of \d+',
+        r'Patient ID.*?\n',
+        r'Lab ID.*?\n',
+    ]
+    cleaned = text
+    for pattern in patterns_to_remove:
+        cleaned = re.sub(pattern, '', cleaned, flags=re.IGNORECASE)
+    cleaned = re.sub(r'\n{3,}', '\n\n', cleaned.strip())
+    return cleaned
 
 # --- API Routes ---
 
@@ -65,31 +72,42 @@ You are a professional medical assistant. Respond in this language: {language}. 
 Given the following symptoms:
 "{symptoms}"
 
-Return structured JSON including:
-- detected_condition
-- medical_analysis
-- root_cause
-- remedies (array)
-- urgency (low/moderate/high)
-- suggested_doctor
-- medicines (array)
+1. Identify the likely medical condition.
+2. Explain why it may occur.
+3. Recommend remedies.
+4. Urgency level.
+5. Suggested specialist.
+6. Extract medicines.
+
+Return JSON:
+{{
+  "detected_condition": "...",
+  "medical_analysis": "...",
+  "root_cause": "...",
+  "remedies": ["...", "..."],
+  "urgency": "low|moderate|high",
+  "suggested_doctor": "...",
+  "medicines": ["..."]
+}}
 """
 
     try:
         response = openai.ChatCompletion.create(
             model="gpt-3.5-turbo",
-            messages=[{"role": "system", "content": "You are a helpful multilingual health assistant."},
-                      {"role": "user", "content": prompt}],
-            temperature=0.4,
+            messages=[
+                {"role": "system", "content": "You are a helpful multilingual health assistant."},
+                {"role": "user", "content": prompt}
+            ],
+            temperature=0.4
         )
         reply = response['choices'][0]['message']['content']
-        parsed = parse_openai_json(reply)
+        parsed = json.loads(reply)
         parsed["query"] = symptoms
     except Exception as e:
-        logger.error(f"OpenAI error: {e}")
+        logger.error(f"OpenAI error or JSON parse error: {e}")
         return jsonify({"error": "AI analysis failed"}), 500
 
-    # Save to database
+    # Save to DB
     conn = get_db_connection()
     if conn:
         try:
@@ -107,26 +125,9 @@ Return structured JSON including:
             conn.commit()
             cursor.close()
         except Exception as e:
-            logger.error(f"Database insert error: {e}")
+            logger.error(f"DB insert error: {e}")
         finally:
             conn.close()
-
-    # Fetch nearby doctors
-    if location and parsed.get("suggested_doctor"):
-        try:
-            doc_response = requests.get(
-                "https://maps.googleapis.com/maps/api/place/nearbysearch/json",
-                params={
-                    "location": f"{location.get('lat')},{location.get('lng')}",
-                    "radius": 5000,
-                    "keyword": f"{parsed.get('suggested_doctor')} doctor",
-                    "key": GOOGLE_API_KEY
-                }
-            )
-            parsed["doctors"] = doc_response.json().get("results", [])[:5]
-        except Exception as e:
-            logger.error(f"Google API error: {e}")
-            parsed["doctors"] = []
 
     return jsonify(parsed), 200
 
@@ -144,81 +145,28 @@ def vision_ocr():
             json={
                 "requests": [
                     {
-                        "image": {"content": image_base64},
+                        "image": {
+                            "content": image_base64
+                        },
                         "features": [{"type": "DOCUMENT_TEXT_DETECTION"}]
                     }
                 ]
             }
         )
         vision_data = vision_response.json()
-        extracted_text = vision_data.get("responses", [{}])[0].get("fullTextAnnotation", {}).get("text", "No text detected")
-        return jsonify({"extracted_text": extracted_text}), 200
+
+        if "responses" not in vision_data or not vision_data["responses"]:
+            logger.error("Vision API error: No responses field")
+            return jsonify({"error": "Failed to process image, no response"}), 400
+
+        extracted_text = vision_data["responses"][0].get("fullTextAnnotation", {}).get("text", "No text detected")
+        cleaned_text = clean_extracted_text(extracted_text)
+
+        return jsonify({"extracted_text": cleaned_text}), 200
 
     except Exception as e:
-        logger.error(f"Google Vision API error: {e}")
-        return jsonify({"error": "Failed to process image with Vision API"}), 500
-
-@app.route("/api/doctors", methods=["GET"])
-def get_doctors():
-    lat = request.args.get("lat")
-    lng = request.args.get("lng")
-    specialty = request.args.get("specialty", "general")
-
-    if not lat or not lng:
-        return jsonify({"error": "Missing required parameters"}), 400
-
-    try:
-        response = requests.get(
-            "https://maps.googleapis.com/maps/api/place/nearbysearch/json",
-            params={
-                "location": f"{lat},{lng}",
-                "radius": 5000,
-                "keyword": f"{specialty} doctor",
-                "key": GOOGLE_API_KEY
-            }
-        )
-        results = response.json().get("results", [])
-        doctors = [
-            {
-                "name": r.get("name"),
-                "phone": r.get("formatted_phone_number", "N/A"),
-                "rating": r.get("rating"),
-                "address": r.get("vicinity")
-            }
-            for r in results[:10]
-        ]
-        return jsonify({"doctors": doctors})
-    except Exception as e:
-        logger.error(f"Google API error: {e}")
-        return jsonify({"doctors": []}), 500
-
-@app.route("/appointments", methods=["POST"])
-def book_appointment():
-    data = request.json
-    name = data.get("name")
-    doctor = data.get("doctor")
-    date = data.get("date")
-
-    if not all([name, doctor, date]):
-        return jsonify({"error": "Missing name, doctor, or date"}), 400
-
-    conn = get_db_connection()
-    if conn:
-        try:
-            cursor = conn.cursor()
-            cursor.execute("""
-                INSERT INTO appointments (patient_name, doctor_name, appointment_date, created_at)
-                VALUES (%s, %s, %s, %s)
-            """, (name, doctor, date, datetime.utcnow()))
-            conn.commit()
-            cursor.close()
-        except Exception as e:
-            logger.error(f"DB insert error: {e}")
-            return jsonify({"error": "Failed to book appointment"}), 500
-        finally:
-            conn.close()
-
-    return jsonify({"status": "Appointment booked"}), 200
+        logger.error(f"Vision OCR error: {e}")
+        return jsonify({"error": "Failed to process image"}), 500
 
 @app.route("/lab-report", methods=["POST"])
 def analyze_lab_report():
@@ -243,20 +191,20 @@ def analyze_lab_report():
         vision_data = vision_response.json()
 
         if "responses" not in vision_data or not vision_data["responses"]:
-            return jsonify({"error": "Failed to process image, no responses from Vision API"}), 400
+            logger.error("Vision API error: No responses field")
+            return jsonify({"error": "Failed to process image"}), 400
 
         extracted_text = vision_data["responses"][0].get("fullTextAnnotation", {}).get("text", "No text detected")
+        cleaned_text = clean_extracted_text(extracted_text)
 
-        if not extracted_text.strip():
-            return jsonify({"error": "No text detected from lab report"}), 400
+        if not cleaned_text.strip() or cleaned_text == "No text detected":
+            return jsonify({"error": "No meaningful text extracted"}), 400
 
-        # Send extracted text to OpenAI to parse
         parsing_prompt = f"""
-Extract lab test results from this lab report text:
+Extract lab test names and values from the text below:
+{cleaned_text}
 
-{extracted_text}
-
-Return JSON array like:
+Return JSON array only:
 [
   {{"test": "Glucose", "value": "110 mg/dL"}},
   {{"test": "Creatinine", "value": "1.2 mg/dL"}}
@@ -266,21 +214,52 @@ Return JSON array like:
         parsing_response = openai.ChatCompletion.create(
             model="gpt-3.5-turbo",
             messages=[{"role": "user", "content": parsing_prompt}],
-            temperature=0.2,
+            temperature=0.1
         )
 
         parsing_reply = parsing_response['choices'][0]['message']['content']
-        lab_results_json = parsing_reply[parsing_reply.find('['):parsing_reply.rfind(']') + 1]
+        start = parsing_reply.find('[')
+        end = parsing_reply.rfind(']')
+        lab_results_json = parsing_reply[start:end+1]
         lab_results = json.loads(lab_results_json)
 
-        return jsonify({
-            "extracted_text": extracted_text,
+        interpretation_prompt = f"""
+Analyze these lab results:
+
+{json.dumps(lab_results, indent=2)}
+
+Give:
+- Overview
+- Abnormal results
+- Normal results
+- Health summary
+
+Return JSON structured.
+"""
+
+        interpretation_response = openai.ChatCompletion.create(
+            model="gpt-3.5-turbo",
+            messages=[{"role": "user", "content": interpretation_prompt}],
+            temperature=0.2
+        )
+
+        interpretation_reply = interpretation_response['choices'][0]['message']['content']
+        start = interpretation_reply.find('{')
+        end = interpretation_reply.rfind('}')
+        interpretation_json = interpretation_reply[start:end+1]
+        interpretation = json.loads(interpretation_json)
+
+        response_data = {
+            "extracted_text": cleaned_text,
             "lab_results": lab_results,
+            "interpretation": interpretation,
             "timestamp": datetime.utcnow().isoformat()
-        }), 200
+        }
+
+        return jsonify(response_data), 200
 
     except Exception as e:
-        logger.error(f"Lab report analysis failed: {e}")
+        logger.error(f"Lab report analysis error: {e}")
         return jsonify({"error": "Failed to analyze lab report"}), 500
 
 @app.route("/health", methods=["GET"])
