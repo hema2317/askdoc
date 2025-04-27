@@ -9,9 +9,12 @@ import psycopg2
 from psycopg2 import sql, OperationalError
 import requests
 import base64
+import re  # <- (You were using re.match without importing re)
 
 app = Flask(__name__)
-CORS(app)
+
+# 🚨 Fixed CORS setup
+CORS(app, resources={r"/*": {"origins": "*"}})
 
 # Logging setup
 logging.basicConfig(level=logging.INFO)
@@ -87,19 +90,8 @@ def parse_openai_json(reply):
             "detected_condition": None
         }
 
-def extract_lab_results(text):
-    """Extract key-value pairs from lab report text (e.g., 'Glucose: 100 mg/dL')."""
-    lines = text.split('\n')
-    results = []
-    for line in lines:
-        match = line.strip().match(r'^([\w\s]+):\s*([\d.]+.*)$')
-        if match:
-            test_name = match.group(1).strip()
-            test_value = match.group(2).strip()
-            results.append({"test": test_name, "value": test_value})
-    return results
-
 # --- API Routes ---
+
 @app.route("/analyze", methods=["POST"])
 def analyze():
     data = request.json
@@ -111,7 +103,6 @@ def analyze():
     if not symptoms:
         return jsonify({"error": "Symptoms required"}), 400
 
-    # OpenAI prompt with explanation ("root cause")
     prompt = f"""
 You are a professional medical assistant. Respond in this language: {language}. The user has this profile: {profile}.
 Given the following symptoms:
@@ -252,7 +243,6 @@ def analyze_lab_report():
     if not image_base64:
         return jsonify({"error": "Missing image_base64 data"}), 400
 
-    # Call Google Vision API to extract text
     try:
         vision_response = requests.post(
             f"https://vision.googleapis.com/v1/images:annotate?key={GOOGLE_VISION_API_KEY}",
@@ -277,7 +267,6 @@ def analyze_lab_report():
         logger.error(f"Google Vision API error: {e}")
         return jsonify({"error": "Failed to process image with Vision API"}), 500
 
-    # Analyze extracted text to find key-value pairs (e.g., "Glucose: 100 mg/dL")
     lab_results = []
     lines = extracted_text.split('\n')
     for line in lines:
@@ -287,14 +276,12 @@ def analyze_lab_report():
             test_value = match.group(2).strip()
             lab_results.append({"test": test_name, "value": test_value})
 
-    # Prepare response
     response_data = {
         "extracted_text": extracted_text,
         "lab_results": lab_results,
         "timestamp": datetime.utcnow().isoformat()
     }
 
-    # Save to database
     conn = get_db_connection()
     if conn:
         try:
