@@ -272,6 +272,7 @@ def book_appointment():
 def analyze_lab_report():
     data = request.json
     image_base64 = data.get("image_base64")
+    profile = data.get("profile", {})
 
     if not image_base64:
         return jsonify({"error": "Missing image_base64 data"}), 400
@@ -297,7 +298,6 @@ def analyze_lab_report():
         )
         vision_data = vision_response.json()
 
-        # ✅ Defensive check (INSIDE try block, properly indented)
         if "responses" not in vision_data or not vision_data["responses"]:
             logger.error("Vision API error: No responses field")
             return jsonify({"error": "Failed to process image, no response from Vision API"}), 400
@@ -307,7 +307,7 @@ def analyze_lab_report():
         if not extracted_text.strip() or extracted_text == "No text detected":
             return jsonify({"error": "No text detected from lab report."}), 400
 
-        # 2. Parse lab tests from extracted text (OpenAI call 1)
+        # 2. Parse lab tests from extracted text
         parsing_prompt = f"""
 Extract test names and values from the following lab report text.
 
@@ -332,25 +332,31 @@ Return only a JSON array like:
         lab_results_json = parsing_reply[start:end+1]
         lab_results = json.loads(lab_results_json)
 
-        # 3. Interpret lab results (OpenAI call 2)
+        # 3. Interpret lab results with enhanced prompt
         interpretation_prompt = f"""
-You are a professional health assistant.
+You are a professional health assistant. The user has the following profile: {json.dumps(profile, indent=2)}.
 
 Here are the lab results:
-
 {json.dumps(lab_results, indent=2)}
 
-1. Give a short overall medical overview.
-2. Identify abnormal results and explain what they might indicate.
-3. List normal results separately.
-4. Provide a health summary for the patient's profile.
+Provide a detailed analysis in a conversational tone, considering the user's profile (age, conditions, medications, lifestyle, etc.). Include:
+
+1. **Overview**: A brief summary of the overall health status based on the lab results.
+2. **Good Results**: List tests with normal values, explaining why they are positive for the user's health.
+3. **Bad Results**: List tests with abnormal values, explaining potential causes (linked to profile if possible) and implications.
+4. **Actionable Advice**: Suggest specific actions (e.g., dietary changes, follow-up tests, lifestyle adjustments).
+5. **Urgency**: Indicate if immediate medical attention is needed ("low", "moderate", "high").
+6. **Specialist**: Recommend a relevant specialist if needed.
 
 Return structured JSON like:
 {{
   "overview": "...",
-  "abnormal_results": [{{"test": "...", "value": "...", "interpretation": "...", "recommendation": "..."}}],
-  "normal_results": [{{"test": "...", "value": "..."}}],
-  "summary": "..."
+  "good_results": [{{"test": "...", "value": "...", "explanation": "..."}}],
+  "bad_results": [{{"test": "...", "value": "...", "explanation": "...", "potential_cause": "..."}}],
+  "actionable_advice": ["...", "..."],
+  "urgency": "low | moderate | high",
+  "suggested_specialist": "...",
+  "summary": "A conversational summary suitable for a chat interface, e.g., 'Your glucose is a bit high, which might be due to...'"
 }}
 """
         interpretation_response = openai.ChatCompletion.create(
@@ -376,9 +382,9 @@ Return structured JSON like:
         return jsonify(response_data), 200
 
     except Exception as e:
-        logger.error(f"Lab report full analysis error: {e}")
+        logger.error(f"Lab report analysis error: {e}")
         return jsonify({"error": "Failed to analyze lab report."}), 500
-
+        
 @app.route("/health", methods=["GET"])
 def health():
     return jsonify({"status": "ok"})
