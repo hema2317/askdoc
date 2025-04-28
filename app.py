@@ -48,6 +48,7 @@ def extract_text_from_image(base64_image):
     except Exception as e:
         logger.error(f"Google Vision OCR failed: {e}")
         raise
+
 def parse_lab_results_with_ai(text):
     prompt = f"""
 You are a medical lab assistant.
@@ -93,40 +94,6 @@ Respond ONLY with JSON in this format:
     parsed_result = json.loads(reply[start:end+1])
     return parsed_result
 
-def parse_lab_results(text):
-    lines = text.split('\n')
-    labs = {}
-    important_markers = ["LDL", "HDL", "Total Cholesterol", "HbA1c", "Glucose", "Creatinine", "Albumin", "Triglycerides", "eGFR"]
-    for line in lines:
-        for marker in important_markers:
-            if marker.lower() in line.lower():
-                parts = line.split()
-                value = None
-                for part in parts:
-                    if any(char.isdigit() for char in part):
-                        value = part
-                        break
-                if value:
-                    labs[marker] = value
-    return labs
-
-def format_lab_prompt(labs):
-    formatted = ", ".join([f"{k}: {v}" for k, v in labs.items()])
-    prompt = f"""
-The following lab results were extracted:
-{formatted}
-
-Analyze them and return JSON with:
-- Overview of health
-- List of abnormal results (if any)
-- Suggested actions
-- Urgency level (low, moderate, high)
-- Personalized advice
-
-Format exactly as JSON.
-"""
-    return prompt
-
 @app.route("/lab-report", methods=["POST"])
 def analyze_lab_report():
     try:
@@ -136,35 +103,16 @@ def analyze_lab_report():
         if not image_base64:
             return jsonify({"error": "Missing image_base64 data"}), 400
 
-      extracted_text = extract_text_from_image(image_base64)
-parsed_lab_data = parse_lab_results_with_ai(extracted_text)
+        extracted_text = extract_text_from_image(image_base64)
+        parsed_lab_data = parse_lab_results_with_ai(extracted_text)
 
-
-        if not lab_results:
+        if not parsed_lab_data:
             return jsonify({"error": "No important lab results found."}), 400
 
-        prompt = format_lab_prompt(lab_results)
-
-        ai_response = openai.ChatCompletion.create(
-            model="gpt-4",
-            messages=[
-                {"role": "system", "content": "You are a professional health assistant."},
-                {"role": "user", "content": prompt}
-            ],
-            temperature=0.3
-        )
-
-        reply = ai_response['choices'][0]['message']['content']
-        start = reply.find('{')
-        end = reply.rfind('}')
-        interpretation = json.loads(reply[start:end+1])
-
         result_to_save = {
-            "overview": interpretation.get("overview", ""),
-            "abnormalities": interpretation.get("abnormal_results", []),
-            "suggested_actions": interpretation.get("suggested_actions", []),
-            "urgency": interpretation.get("urgency", ""),
-            "advice": interpretation.get("personalized_advice", "")
+            "type_of_report": parsed_lab_data.get("type_of_report", ""),
+            "tests": parsed_lab_data.get("tests", []),
+            "abnormal_tests": parsed_lab_data.get("abnormal_tests", [])
         }
 
         conn = get_db_connection()
@@ -186,8 +134,7 @@ parsed_lab_data = parse_lab_results_with_ai(extracted_text)
                 conn.close()
 
         return jsonify({
-            "lab_results": lab_results,
-            "interpretation": result_to_save,
+            "parsed_lab_data": result_to_save,
             "timestamp": datetime.utcnow().isoformat()
         }), 200
 
