@@ -191,7 +191,7 @@ def analyze_lab_report():
             logger.error(f"Vision API failed: {vision_response.text}")
             return jsonify({"error": "Failed to extract text from image"}), 500
 
-        extracted_text = vision_data["responses"][0]["fullTextAnnotation"].get("text", "No text detected")
+        extracted_text = vision_data["responses"][0].get("fullTextAnnotation", {}).get("text", "No text detected")
         cleaned_text = clean_extracted_text(extracted_text)
 
         if not cleaned_text.strip() or cleaned_text == "No text detected":
@@ -220,23 +220,23 @@ Return JSON array only:
         lab_results_json = parsing_reply[start:end+1]
         lab_results = json.loads(lab_results_json)
 
-        interpretation_prompt = f"""
-Analyze these lab results:
+        enhanced_prompt = f"""
+Analyze the following lab results:
 
 {json.dumps(lab_results, indent=2)}
 
 Give:
-- Overview
-- Abnormal results
-- Normal results
-- Health summary
-
+- General overview
+- Identify which are normal and which are abnormal
+- What abnormalities suggest
+- Recommend next steps patient should take (lifestyle, visit doctor, etc.)
+- Short summary advice for doctor
 Return JSON structured.
 """
 
         interpretation_response = openai.ChatCompletion.create(
             model="gpt-3.5-turbo",
-            messages=[{"role": "user", "content": interpretation_prompt}],
+            messages=[{"role": "user", "content": enhanced_prompt}],
             temperature=0.2
         )
 
@@ -252,6 +252,27 @@ Return JSON structured.
             "interpretation": interpretation,
             "timestamp": datetime.utcnow().isoformat()
         }
+
+        # Save enhanced analysis for doctor
+        conn = get_db_connection()
+        if conn:
+            try:
+                cursor = conn.cursor()
+                cursor.execute("""
+                    INSERT INTO lab_reports (extracted_text, results, interpretation, created_at)
+                    VALUES (%s, %s, %s, %s)
+                """, (
+                    cleaned_text,
+                    json.dumps(lab_results),
+                    json.dumps(interpretation),
+                    datetime.utcnow()
+                ))
+                conn.commit()
+                cursor.close()
+            except Exception as e:
+                logger.error(f"DB insert error for lab report: {e}")
+            finally:
+                conn.close()
 
         return jsonify(response_data), 200
 
