@@ -93,8 +93,10 @@ Respond ONLY with JSON in this format:
     end = reply.rfind('}')
     parsed_result = json.loads(reply[start:end+1])
     return parsed_result
-    
-    @app.route("/lab-report", methods=["POST"])
+
+# --- ROUTES must be outside of any function ---
+
+@app.route("/lab-report", methods=["POST"])
 def analyze_lab_report():
     try:
         data = request.json
@@ -140,8 +142,6 @@ def analyze_lab_report():
     except Exception as e:
         logger.error(f"Lab report analysis crashed: {str(e)}")
         return jsonify({"error": "Server error during lab report analysis"}), 500
-
-
 
 @app.route("/health", methods=["GET"])
 def health():
