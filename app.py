@@ -94,7 +94,7 @@ Respond ONLY with JSON in this format:
     parsed_result = json.loads(reply[start:end+1])
     return parsed_result
     
-@app.route("/lab-report", methods=["POST"])
+    @app.route("/lab-report", methods=["POST"])
 def analyze_lab_report():
     try:
         data = request.json
@@ -103,19 +103,16 @@ def analyze_lab_report():
         if not image_base64:
             return jsonify({"error": "Missing image_base64 data"}), 400
 
+        # Step 1: OCR extract text
         extracted_text = extract_text_from_image(image_base64)
+
+        # Step 2: Analyze text with AI
         parsed_lab_data = parse_lab_results_with_ai(extracted_text)
 
         if not parsed_lab_data:
             return jsonify({"error": "Lab report parsing failed."}), 400
 
-        result_to_save = {
-            "type_of_report": parsed_lab_data.get("type_of_report", ""),
-            "tests": parsed_lab_data.get("tests", []),
-            "abnormal_tests": parsed_lab_data.get("abnormal_tests", [])
-        }
-
-        # Save into database if available
+        # Step 3: Save the FULL AI result (optional)
         conn = get_db_connection()
         if conn:
             try:
@@ -124,7 +121,7 @@ def analyze_lab_report():
                     INSERT INTO lab_reports (interpretation, created_at)
                     VALUES (%s, %s)
                 """, (
-                    json.dumps(result_to_save),
+                    json.dumps(parsed_lab_data),
                     datetime.utcnow()
                 ))
                 conn.commit()
@@ -134,14 +131,16 @@ def analyze_lab_report():
             finally:
                 conn.close()
 
+        # Step 4: Return the parsed AI result directly
         return jsonify({
-            "parsed_lab_data": result_to_save,
+            "parsed_lab_data": parsed_lab_data,
             "timestamp": datetime.utcnow().isoformat()
         }), 200
 
     except Exception as e:
         logger.error(f"Lab report analysis crashed: {str(e)}")
         return jsonify({"error": "Server error during lab report analysis"}), 500
+
 
 
 @app.route("/health", methods=["GET"])
