@@ -20,7 +20,6 @@ logger = logging.getLogger(__name__)
 # Environment Variables
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 DATABASE_URL = os.getenv("DATABASE_URL")
-GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")
 GOOGLE_VISION_API_KEY = os.getenv("GOOGLE_VISION_API_KEY")
 openai.api_key = OPENAI_API_KEY
 
@@ -44,8 +43,9 @@ def clean_extracted_text(text):
     for pattern in patterns_to_remove:
         cleaned = re.sub(pattern, '', cleaned, flags=re.IGNORECASE)
 
-    # 👉 Add this new line below the loop:
+    # Additional watermark cleaning
     cleaned = re.sub(r'Drlogy.*', '', cleaned, flags=re.IGNORECASE)
+    cleaned = re.sub(r'Pathology Laboratory.*', '', cleaned, flags=re.IGNORECASE)
 
     cleaned = re.sub(r'\n+', '\n', cleaned.strip())
     cleaned = re.sub(r'\s+', ' ', cleaned)
@@ -151,7 +151,7 @@ def vision_ocr():
 
         if ("responses" not in vision_data or not vision_data["responses"] or
             "fullTextAnnotation" not in vision_data["responses"][0]):
-            logger.error("Vision API error: No fullTextAnnotation")
+            logger.error(f"Vision API error: {vision_response.text}")
             return jsonify({"error": "Failed to extract text from image"}), 400
 
         extracted_text = vision_data["responses"][0]["fullTextAnnotation"].get("text", "No text detected")
@@ -186,11 +186,12 @@ def analyze_lab_report():
 
         vision_data = vision_response.json()
 
-        if "responses" not in vision_data or not vision_data["responses"]:
+        if ("responses" not in vision_data or not vision_data["responses"] or
+            "fullTextAnnotation" not in vision_data["responses"][0]):
             logger.error(f"Vision API failed: {vision_response.text}")
             return jsonify({"error": "Failed to extract text from image"}), 500
 
-        extracted_text = vision_data["responses"][0].get("fullTextAnnotation", {}).get("text", "No text detected")
+        extracted_text = vision_data["responses"][0]["fullTextAnnotation"].get("text", "No text detected")
         cleaned_text = clean_extracted_text(extracted_text)
 
         if not cleaned_text.strip() or cleaned_text == "No text detected":
