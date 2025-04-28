@@ -6,6 +6,7 @@ from flask import Flask, request, jsonify
 from flask_cors import CORS
 import openai
 import psycopg2
+import base64
 import requests
 
 app = Flask(__name__)
@@ -20,8 +21,6 @@ OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 DATABASE_URL = os.getenv("DATABASE_URL")
 GOOGLE_VISION_API_KEY = os.getenv("GOOGLE_VISION_API_KEY")
 openai.api_key = OPENAI_API_KEY
-
-# --- Helper Functions ---
 
 def get_db_connection():
     try:
@@ -52,39 +51,50 @@ def extract_text_from_image(base64_image):
 
 def parse_lab_results_with_ai(text):
     prompt = f"""
-You are a medical lab assistant with expertise in interpreting laboratory reports.
+You are a medical lab assistant.
 
-Analyze the following extracted text from a lab report:
+You will be given raw text extracted from a lab report (it could be blood work, urine work, pathology, biopsy, imaging reports like MRI or X-ray, etc.).
+
+Please do the following:
+
+1. Identify all test names and their corresponding values.
+2. Organize them into JSON format.
+3. Include a field called 'type_of_report' (example: KFT, LFT, MRI, Urinalysis, etc.) based on best guess.
+4. If possible, flag any abnormal values (just basic based on text, not detailed interpretation).
+
+The text is:
 
 {text}
 
-Respond ONLY in JSON format:
-- type_of_report
-- tests (name, value, unit, normal range, status: normal/high/low)
-- abnormal_tests (name, reason)
-- clinical_interpretation (summary, potential_conditions, recommendations)
-- red_flags
-"""
-    try:
-        ai_response = openai.ChatCompletion.create(
-            model="gpt-4",
-            messages=[
-                {"role": "system", "content": "You are a highly skilled medical lab report interpreter."},
-                {"role": "user", "content": prompt}
-            ],
-            temperature=0.2,
-            max_tokens=2000
-        )
-        reply = ai_response['choices'][0]['message']['content']
-        start = reply.find('{')
-        end = reply.rfind('}')
-        parsed_result = json.loads(reply[start:end+1])
-        return parsed_result
-    except Exception as e:
-        logger.error(f"AI interpretation failed: {e}")
-        raise
+Respond ONLY with JSON in this format:
 
-# --- Routes ---
+{{
+    "type_of_report": "Kidney Function Test (KFT)",
+    "tests": [
+        {{"name": "Urea", "value": "16.00 mg/dL"}},
+        {{"name": "Creatinine", "value": "0.90 mg/dL"}},
+        ...
+    ],
+    "abnormal_tests": [
+        {{"name": "Creatinine", "value": "High"}}
+    ]
+}}
+"""
+    ai_response = openai.ChatCompletion.create(
+        model="gpt-4",
+        messages=[
+            {"role": "system", "content": "You are a smart medical AI assistant."},
+            {"role": "user", "content": prompt}
+        ],
+        temperature=0.2
+    )
+    reply = ai_response['choices'][0]['message']['content']
+    start = reply.find('{')
+    end = reply.rfind('}')
+    parsed_result = json.loads(reply[start:end+1])
+    return parsed_result
+
+# --- ROUTES must be outside of any function ---
 
 @app.route("/lab-report", methods=["POST"])
 def analyze_lab_report():
@@ -95,17 +105,27 @@ def analyze_lab_report():
         if not image_base64:
             return jsonify({"error": "Missing image_base64 data"}), 400
 
+        # Step 1: OCR extract text
         extracted_text = extract_text_from_image(image_base64)
+
+        # Step 2: Analyze text with AI
         parsed_lab_data = parse_lab_results_with_ai(extracted_text)
 
+        if not parsed_lab_data:
+            return jsonify({"error": "Lab report parsing failed."}), 400
+
+        # Step 3: Save the FULL AI result (optional)
         conn = get_db_connection()
         if conn:
             try:
                 cursor = conn.cursor()
-                cursor.execute(
-                    "INSERT INTO lab_reports (interpretation, created_at) VALUES (%s, %s)",
-                    (json.dumps(parsed_lab_data), datetime.utcnow())
-                )
+                cursor.execute("""
+                    INSERT INTO lab_reports (interpretation, created_at)
+                    VALUES (%s, %s)
+                """, (
+                    json.dumps(parsed_lab_data),
+                    datetime.utcnow()
+                ))
                 conn.commit()
                 cursor.close()
             except Exception as e:
@@ -113,6 +133,7 @@ def analyze_lab_report():
             finally:
                 conn.close()
 
+        # Step 4: Return the parsed AI result directly
         return jsonify({
             "parsed_lab_data": parsed_lab_data,
             "timestamp": datetime.utcnow().isoformat()
@@ -122,50 +143,6 @@ def analyze_lab_report():
         logger.error(f"Lab report analysis crashed: {str(e)}")
         return jsonify({"error": "Server error during lab report analysis"}), 500
 
-@app.route("/analyze", methods=["POST"])
-def analyze_symptoms():
-    try:
-        data = request.json
-        symptoms = data.get("symptoms", "")
-        profile = data.get("profile", {})
-
-        if not symptoms:
-            return jsonify({"error": "Symptoms missing"}), 400
-
-        prompt = f"""
-You are a professional medical AI with expertise in internal medicine. User profile:
-{json.dumps(profile, indent=2)}
-
-Analyze these symptoms:
-"{symptoms}"
-
-Respond ONLY in JSON format:
-- possible_causes
-- suggested_remedies
-- urgency_level (normal / moderate / emergency)
-- suggested_doctor_type
-"""
-
-        ai_response = openai.ChatCompletion.create(
-            model="gpt-4",
-            messages=[
-                {"role": "system", "content": "You are a skilled medical AI assistant."},
-                {"role": "user", "content": prompt}
-            ],
-            temperature=0.3,
-            max_tokens=1000
-        )
-        reply = ai_response['choices'][0]['message']['content']
-        start = reply.find('{')
-        end = reply.rfind('}')
-        parsed_response = json.loads(reply[start:end+1])
-
-        return jsonify(parsed_response), 200
-
-    except Exception as e:
-        logger.error(f"Symptom analysis failed: {e}")
-        return jsonify({"error": "Server error during symptom analysis"}), 500
-
 @app.route("/health", methods=["GET"])
 def health():
     return jsonify({"status": "ok"})
@@ -173,8 +150,6 @@ def health():
 @app.route("/emergency", methods=["GET"])
 def emergency():
     return jsonify({"call": "911"})
-
-# --- Main Entry Point ---
 
 if __name__ == '__main__':
     app.run(debug=True)
