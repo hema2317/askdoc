@@ -122,18 +122,24 @@ def analyze_symptoms():
         if not symptoms:
             return jsonify({"error": "Symptoms missing"}), 400
 
-        prompt = f\"""You are an experienced medical AI. The user profile is:
+        prompt = f"""
+You are a professional medical AI with expertise in internal medicine. User profile:
 {json.dumps(profile, indent=2)}
 
-Analyze the following symptoms:
+Analyze these symptoms:
 "{symptoms}"
 
-Provide possible causes, remedies, urgency, and recommended doctor type in JSON format."\"\"
+Respond in JSON format with:
+- Possible causes
+- Remedies
+- Urgency (normal / moderate / emergency)
+- Suggested doctor specialty
+"""
 
         ai_response = openai.ChatCompletion.create(
             model="gpt-4",
             messages=[
-                {"role": "system", "content": "You are a highly skilled AI medical assistant."},
+                {"role": "system", "content": "You are a professional medical AI assistant."},
                 {"role": "user", "content": prompt}
             ],
             temperature=0.3,
