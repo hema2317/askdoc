@@ -48,6 +48,50 @@ def extract_text_from_image(base64_image):
     except Exception as e:
         logger.error(f"Google Vision OCR failed: {e}")
         raise
+def parse_lab_results_with_ai(text):
+    prompt = f"""
+You are a medical lab assistant.
+
+You will be given raw text extracted from a lab report (it could be blood work, urine work, pathology, biopsy, imaging reports like MRI or X-ray, etc.).
+
+Please do the following:
+
+1. Identify all test names and their corresponding values.
+2. Organize them into JSON format.
+3. Include a field called 'type_of_report' (example: KFT, LFT, MRI, Urinalysis, etc.) based on best guess.
+4. If possible, flag any abnormal values (just basic based on text, not detailed interpretation).
+
+The text is:
+
+{text}
+
+Respond ONLY with JSON in this format:
+
+{{
+    "type_of_report": "Kidney Function Test (KFT)",
+    "tests": [
+        {{"name": "Urea", "value": "16.00 mg/dL"}},
+        {{"name": "Creatinine", "value": "0.90 mg/dL"}},
+        ...
+    ],
+    "abnormal_tests": [
+        {{"name": "Creatinine", "value": "High"}}
+    ]
+}}
+"""
+    ai_response = openai.ChatCompletion.create(
+        model="gpt-4",
+        messages=[
+            {"role": "system", "content": "You are a smart medical AI assistant."},
+            {"role": "user", "content": prompt}
+        ],
+        temperature=0.2
+    )
+    reply = ai_response['choices'][0]['message']['content']
+    start = reply.find('{')
+    end = reply.rfind('}')
+    parsed_result = json.loads(reply[start:end+1])
+    return parsed_result
 
 def parse_lab_results(text):
     lines = text.split('\n')
@@ -92,8 +136,9 @@ def analyze_lab_report():
         if not image_base64:
             return jsonify({"error": "Missing image_base64 data"}), 400
 
-        extracted_text = extract_text_from_image(image_base64)
-        lab_results = parse_lab_results(extracted_text)
+      extracted_text = extract_text_from_image(image_base64)
+parsed_lab_data = parse_lab_results_with_ai(extracted_text)
+
 
         if not lab_results:
             return jsonify({"error": "No important lab results found."}), 400
