@@ -93,7 +93,7 @@ Respond ONLY with JSON in this format:
     end = reply.rfind('}')
     parsed_result = json.loads(reply[start:end+1])
     return parsed_result
-
+    
 @app.route("/lab-report", methods=["POST"])
 def analyze_lab_report():
     try:
@@ -107,7 +107,7 @@ def analyze_lab_report():
         parsed_lab_data = parse_lab_results_with_ai(extracted_text)
 
         if not parsed_lab_data:
-            return jsonify({"error": "No important lab results found."}), 400
+            return jsonify({"error": "Lab report parsing failed."}), 400
 
         result_to_save = {
             "type_of_report": parsed_lab_data.get("type_of_report", ""),
@@ -115,6 +115,7 @@ def analyze_lab_report():
             "abnormal_tests": parsed_lab_data.get("abnormal_tests", [])
         }
 
+        # Save into database if available
         conn = get_db_connection()
         if conn:
             try:
@@ -141,6 +142,7 @@ def analyze_lab_report():
     except Exception as e:
         logger.error(f"Lab report analysis crashed: {str(e)}")
         return jsonify({"error": "Server error during lab report analysis"}), 500
+
 
 @app.route("/health", methods=["GET"])
 def health():
