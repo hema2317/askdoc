@@ -6,7 +6,7 @@ from flask import Flask, request, jsonify
 from flask_cors import CORS
 import openai
 import psycopg2
-from psycopg2 import OperationalError
+import base64
 import requests
 
 app = Flask(__name__)
@@ -22,90 +22,66 @@ DATABASE_URL = os.getenv("DATABASE_URL")
 GOOGLE_VISION_API_KEY = os.getenv("GOOGLE_VISION_API_KEY")
 openai.api_key = OPENAI_API_KEY
 
-# --- Helper Functions ---
 def get_db_connection():
     try:
         conn = psycopg2.connect(DATABASE_URL, sslmode='require')
         return conn
-    except OperationalError as e:
+    except Exception as e:
         logger.error(f"Database connection failed: {e}")
         return None
 
-# --- API Routes ---
-
-@app.route("/analyze", methods=["POST"])
-def analyze():
-    data = request.json
-    symptoms = data.get("symptoms", "")
-    location = data.get("location", {})
-    language = data.get("language", "English")
-    profile = data.get("profile", "")
-
-    if not symptoms:
-        return jsonify({"error": "Symptoms required"}), 400
-
-    prompt = f"""
-You are a professional medical assistant. Respond in this language: {language}. The user has this profile: {profile}.
-Given the following symptoms:
-"{symptoms}"
-
-1. Identify likely medical condition.
-2. Explain why it may occur.
-3. Recommend remedies.
-4. Urgency level.
-5. Suggested specialist.
-6. Extract medicines.
-
-Return JSON:
-{{
-  "detected_condition": "...",
-  "medical_analysis": "...",
-  "root_cause": "...",
-  "remedies": ["...", "..."],
-  "urgency": "low|moderate|high",
-  "suggested_doctor": "...",
-  "medicines": ["..."]
-}}
-"""
-
+def extract_text_from_image(base64_image):
     try:
-        response = openai.ChatCompletion.create(
-            model="gpt-3.5-turbo",
-            messages=[
-                {"role": "system", "content": "You are a helpful multilingual health assistant."},
-                {"role": "user", "content": prompt}
-            ],
-            temperature=0.4
-        )
-        reply = response['choices'][0]['message']['content']
-        parsed = json.loads(reply)
-        parsed["query"] = symptoms
+        vision_url = f"https://vision.googleapis.com/v1/images:annotate?key={GOOGLE_VISION_API_KEY}"
+        body = {
+            "requests": [
+                {
+                    "image": {"content": base64_image},
+                    "features": [{"type": "TEXT_DETECTION"}]
+                }
+            ]
+        }
+        response = requests.post(vision_url, json=body)
+        response.raise_for_status()
+        text = response.json()['responses'][0]['fullTextAnnotation']['text']
+        return text
     except Exception as e:
-        logger.error(f"OpenAI error or JSON parse error: {e}")
-        return jsonify({"error": "AI analysis failed"}), 500
+        logger.error(f"Google Vision OCR failed: {e}")
+        raise
 
-    conn = get_db_connection()
-    if conn:
-        try:
-            cursor = conn.cursor()
-            cursor.execute("""
-                INSERT INTO medical_analyses (query, analysis, detected_condition, medicines, created_at)
-                VALUES (%s, %s, %s, %s, %s)
-            """, (
-                symptoms,
-                parsed.get("medical_analysis"),
-                parsed.get("detected_condition"),
-                json.dumps(parsed.get("medicines", [])),
-                datetime.utcnow()
-            ))
-            conn.commit()
-            cursor.close()
-        except Exception as e:
-            logger.error(f"DB insert error: {e}")
-        finally:
-            conn.close()
+def parse_lab_results(text):
+    lines = text.split('\n')
+    labs = {}
+    important_markers = ["LDL", "HDL", "Total Cholesterol", "HbA1c", "Glucose", "Creatinine", "Albumin", "Triglycerides", "eGFR"]
+    for line in lines:
+        for marker in important_markers:
+            if marker.lower() in line.lower():
+                parts = line.split()
+                value = None
+                for part in parts:
+                    if any(char.isdigit() for char in part):
+                        value = part
+                        break
+                if value:
+                    labs[marker] = value
+    return labs
 
-    return jsonify(parsed), 200
+def format_lab_prompt(labs):
+    formatted = ", ".join([f"{k}: {v}" for k, v in labs.items()])
+    prompt = f"""
+The following lab results were extracted:
+{formatted}
+
+Analyze them and return JSON with:
+- Overview of health
+- List of abnormal results (if any)
+- Suggested actions
+- Urgency level (low, moderate, high)
+- Personalized advice
+
+Format exactly as JSON.
+"""
+    return prompt
 
 @app.route("/lab-report", methods=["POST"])
 def analyze_lab_report():
@@ -116,34 +92,34 @@ def analyze_lab_report():
         if not image_base64:
             return jsonify({"error": "Missing image_base64 data"}), 400
 
-        # Enhanced AI prompt for lab report interpretation
-        parsing_prompt = """
-The patient has submitted a lab report.
-Analyze these results carefully and provide:
-- Overall health overview
-- Normal and abnormal lab test results
-- What abnormal results may indicate
-- Personalized advice (e.g., dietary changes, physical activity, hydration)
-- Whether to immediately see a doctor or monitor at home
-- Short, clear guidance for doctors to act quickly
-Return response in JSON format.
-"""
+        extracted_text = extract_text_from_image(image_base64)
+        lab_results = parse_lab_results(extracted_text)
 
-        parsing_response = openai.ChatCompletion.create(
-            model="gpt-3.5-turbo",
-            messages=[{"role": "user", "content": parsing_prompt}],
-            temperature=0.2
+        if not lab_results:
+            return jsonify({"error": "No important lab results found."}), 400
+
+        prompt = format_lab_prompt(lab_results)
+
+        ai_response = openai.ChatCompletion.create(
+            model="gpt-4",
+            messages=[
+                {"role": "system", "content": "You are a professional health assistant."},
+                {"role": "user", "content": prompt}
+            ],
+            temperature=0.3
         )
 
-        interpretation_reply = parsing_response['choices'][0]['message']['content']
-        start = interpretation_reply.find('{')
-        end = interpretation_reply.rfind('}')
-        interpretation_json = interpretation_reply[start:end+1]
-        interpretation = json.loads(interpretation_json)
+        reply = ai_response['choices'][0]['message']['content']
+        start = reply.find('{')
+        end = reply.rfind('}')
+        interpretation = json.loads(reply[start:end+1])
 
-        response_data = {
-            "interpretation": interpretation,
-            "timestamp": datetime.utcnow().isoformat()
+        result_to_save = {
+            "overview": interpretation.get("overview", ""),
+            "abnormalities": interpretation.get("abnormal_results", []),
+            "suggested_actions": interpretation.get("suggested_actions", []),
+            "urgency": interpretation.get("urgency", ""),
+            "advice": interpretation.get("personalized_advice", "")
         }
 
         conn = get_db_connection()
@@ -154,7 +130,7 @@ Return response in JSON format.
                     INSERT INTO lab_reports (interpretation, created_at)
                     VALUES (%s, %s)
                 """, (
-                    json.dumps(interpretation),
+                    json.dumps(result_to_save),
                     datetime.utcnow()
                 ))
                 conn.commit()
@@ -164,7 +140,11 @@ Return response in JSON format.
             finally:
                 conn.close()
 
-        return jsonify(response_data), 200
+        return jsonify({
+            "lab_results": lab_results,
+            "interpretation": result_to_save,
+            "timestamp": datetime.utcnow().isoformat()
+        }), 200
 
     except Exception as e:
         logger.error(f"Lab report analysis crashed: {str(e)}")
