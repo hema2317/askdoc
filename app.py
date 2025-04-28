@@ -49,63 +49,17 @@ def extract_text_from_image(base64_image):
         raise
 
 def parse_lab_results_with_ai(text):
-    prompt = f"""
-You are a medical lab assistant with expertise in interpreting all types of laboratory and imaging reports.
-
-You will be given raw text extracted from a lab report (blood work, urine analysis, pathology, biopsy, imaging reports like MRI/X-ray, etc.).
-
-Please perform the following tasks:
-
-1. Identify all test names and their corresponding values with units
-2. Organize them into JSON format
-3. Determine the type of report (KFT, LFT, CBC, MRI, etc.)
-4. Flag any abnormal values with their significance
-5. Provide a detailed clinical interpretation including:
-   - What each abnormal value might indicate
-   - Potential conditions/diseases suggested by the results
-   - Any concerning patterns or combinations
-   - Recommendations for follow-up if needed
-6. For imaging reports, describe findings in clinical context
+    prompt = f\"""You are a medical lab assistant with expertise in interpreting all types of laboratory and imaging reports.
 
 The text is:
-
 {text}
 
-Respond with JSON in this format:
-
-{{
-    "type_of_report": "Kidney Function Test (KFT)",
-    "tests": [
-        {{
-            "name": "Urea", 
-            "value": "16.00 mg/dL", 
-            "normal_range": "7-20 mg/dL",
-            "status": "normal" | "high" | "low",
-            "significance": "Brief explanation if abnormal"
-        }},
-        ...
-    ],
-    "abnormal_tests": [
-        {{
-            "name": "Creatinine",
-            "value": "1.90 mg/dL",
-            "normal_range": "0.6-1.2 mg/dL",
-            "significance": "May indicate impaired kidney function"
-        }}
-    ],
-    "clinical_interpretation": {{
-        "summary": "Overall assessment of the report",
-        "potential_conditions": ["Possible condition 1", "Possible condition 2"],
-        "recommendations": ["Follow-up test suggestion", "Consult specialist"]
-    }},
-    "red_flags": ["Critical values or concerning findings"]
-}}
-"""
+Respond with JSON format."\"\"
     try:
         ai_response = openai.ChatCompletion.create(
             model="gpt-4",
             messages=[
-                {"role": "system", "content": "You are a highly skilled medical AI with expertise in laboratory medicine and radiology."},
+                {"role": "system", "content": "You are a highly skilled medical AI."},
                 {"role": "user", "content": prompt}
             ],
             temperature=0.2,
@@ -125,7 +79,6 @@ def analyze_lab_report():
     try:
         data = request.json
         image_base64 = data.get("image_base64")
-
         if not image_base64:
             return jsonify({"error": "Missing image_base64 data"}), 400
 
@@ -139,13 +92,10 @@ def analyze_lab_report():
         if conn:
             try:
                 cursor = conn.cursor()
-                cursor.execute("""
-                    INSERT INTO lab_reports (interpretation, created_at)
-                    VALUES (%s, %s)
-                """, (
-                    json.dumps(parsed_lab_data),
-                    datetime.utcnow()
-                ))
+                cursor.execute(
+                    "INSERT INTO lab_reports (interpretation, created_at) VALUES (%s, %s)",
+                    (json.dumps(parsed_lab_data), datetime.utcnow())
+                )
                 conn.commit()
                 cursor.close()
             except Exception as e:
@@ -159,8 +109,46 @@ def analyze_lab_report():
         }), 200
 
     except Exception as e:
-        logger.error(f"Lab report analysis crashed: {str(e)}")
+        logger.error(f"Lab report analysis crashed: {e}")
         return jsonify({"error": "Server error during lab report analysis"}), 500
+
+@app.route("/analyze", methods=["POST"])
+def analyze_symptoms():
+    try:
+        data = request.json
+        symptoms = data.get("symptoms", "")
+        profile = data.get("profile", {})
+
+        if not symptoms:
+            return jsonify({"error": "Symptoms missing"}), 400
+
+        prompt = f\"""You are an experienced medical AI. The user profile is:
+{json.dumps(profile, indent=2)}
+
+Analyze the following symptoms:
+"{symptoms}"
+
+Provide possible causes, remedies, urgency, and recommended doctor type in JSON format."\"\"
+
+        ai_response = openai.ChatCompletion.create(
+            model="gpt-4",
+            messages=[
+                {"role": "system", "content": "You are a highly skilled AI medical assistant."},
+                {"role": "user", "content": prompt}
+            ],
+            temperature=0.3,
+            max_tokens=1000
+        )
+        reply = ai_response['choices'][0]['message']['content']
+        start = reply.find('{')
+        end = reply.rfind('}')
+        parsed_response = json.loads(reply[start:end+1])
+
+        return jsonify(parsed_response), 200
+
+    except Exception as e:
+        logger.error(f"Symptom analysis failed: {e}")
+        return jsonify({"error": "Server error during symptom analysis"}), 500
 
 @app.route("/health", methods=["GET"])
 def health():
