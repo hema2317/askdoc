@@ -73,7 +73,7 @@ Please analyze the situation in detail by:
         reply = response['choices'][0]['message']['content']
         return reply
     except Exception as e:
-        logger.error(f"OpenAI error: {e}")
+        logger.error("OpenAI request failed.")
         return None
 
 def parse_openai_json(reply):
