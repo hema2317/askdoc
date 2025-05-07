@@ -94,7 +94,7 @@ def parse_openai_json(reply):
             "detected_condition": None
         }
 
-# --- Example protected route ---
+# --- Routes ---
 @app.route("/health", methods=["GET"])
 def health():
     return jsonify({"status": "ok"})
@@ -102,6 +102,27 @@ def health():
 @app.route("/emergency", methods=["GET"])
 def emergency():
     return jsonify({"call": "911"})
+
+@app.route("/analyze", methods=["POST"])
+def analyze():
+    auth_error = check_api_token()
+    if auth_error:
+        return auth_error
+
+    data = request.get_json()
+    symptoms = data.get("symptoms")
+    language = data.get("language", "English")
+    profile = data.get("profile", "")
+
+    if not symptoms:
+        return jsonify({"error": "Symptoms are required"}), 400
+
+    raw_reply = generate_openai_response(symptoms, language, profile)
+    if not raw_reply:
+        return jsonify({"error": "AI response failed"}), 500
+
+    parsed = parse_openai_json(raw_reply)
+    return jsonify(parsed)
 
 if __name__ == '__main__':
     app.run(debug=True)
