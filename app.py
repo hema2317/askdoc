@@ -24,13 +24,13 @@ API_AUTH_TOKEN = os.getenv("API_AUTH_TOKEN")
 
 openai.api_key = OPENAI_API_KEY
 
-# --- Authorization Middleware ---
+# --- Middleware: Check API token ---
 def check_api_token():
     auth = request.headers.get("Authorization")
     if not auth or auth != f"Bearer {API_AUTH_TOKEN}":
         return jsonify({"error": "Unauthorized"}), 401
 
-# --- Database Connection ---
+# --- Database Connection (optional) ---
 def get_db_connection():
     try:
         return psycopg2.connect(DATABASE_URL, sslmode='require')
@@ -38,26 +38,30 @@ def get_db_connection():
         logger.error(f"Database connection failed: {e}")
         return None
 
-# --- OpenAI Analysis Logic ---
+# --- OpenAI Prompt Logic ---
 def generate_openai_response(symptoms, language, profile):
     prompt = f"""
-You are a professional medical assistant. Respond in this language: {language}. The user has this profile: {profile}.
-Given the following symptoms:
+You are a professional medical assistant. Respond in this language: {language}.
+The user has this profile: {profile}
+
+Symptoms:
 "{symptoms}"
 
-Please analyze the situation in detail by:
+Please analyze this case and return a structured medical explanation:
 
-1. Identifying the likely medical condition or physiological issue.
-2. Explaining *why* this condition is likely happening based on patient profile, medication, dosage, food habits, or known health issues (reasoning required).
-3. Suggesting practical remedies or adjustments the user can make at home.
-4. Highlighting if the situation requires urgent care or follow-up.
-5. Recommending the most relevant type of doctor or specialist to consult.
-6. Extracting and listing any medications mentioned.
-7. Returning your answer in structured JSON:
+1. Detected condition
+2. Root cause
+3. Medical explanation
+4. Home remedies
+5. Urgency level (low, moderate, high)
+6. Suggested doctor type
+7. Any medicines mentioned
+
+Return JSON only:
 {{
   "detected_condition": "...",
   "medical_analysis": "...",
-  "root_cause": "...",   
+  "root_cause": "...",
   "remedies": ["...", "..."],
   "urgency": "low | moderate | high",
   "suggested_doctor": "...",
@@ -78,19 +82,19 @@ Please analyze the situation in detail by:
         logger.error(f"OpenAI request failed: {e}")
         return None
 
-# --- Parse JSON from OpenAI ---
+# --- JSON Parser with Fallback ---
 def parse_openai_json(reply):
     try:
         return json.loads(reply)
     except json.JSONDecodeError:
         return {
-            "medical_analysis": reply,
+            "medical_analysis": reply or "No response from OpenAI.",
             "root_cause": "Unknown due to parsing error",
             "remedies": [],
-            "urgency": None,
+            "urgency": "unknown",
             "medicines": [],
             "suggested_doctor": "general",
-            "detected_condition": None
+            "detected_condition": "unsure"
         }
 
 # --- Routes ---
@@ -113,10 +117,12 @@ def analyze():
     profile = data.get("profile", "")
 
     reply = generate_openai_response(symptoms, language, profile)
-    parsed = parse_openai_json(reply)
+    if not reply:
+        return jsonify({"error": "OpenAI failed to respond"}), 500
 
+    parsed = parse_openai_json(reply)
     return jsonify(parsed)
 
-# --- Run ---
+# --- Main entrypoint for local run (Render uses gunicorn) ---
 if __name__ == '__main__':
     app.run(debug=True)
