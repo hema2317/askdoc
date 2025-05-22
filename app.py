@@ -5,6 +5,7 @@ from datetime import datetime
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 import openai
+import requests
 import psycopg2
 from psycopg2 import OperationalError
 
@@ -30,7 +31,7 @@ def check_api_token():
     if not auth or auth != f"Bearer {API_AUTH_TOKEN}":
         return jsonify({"error": "Unauthorized"}), 401
 
-# --- Database Connection (optional) ---
+# --- Optional DB Connection ---
 def get_db_connection():
     try:
         return psycopg2.connect(DATABASE_URL, sslmode='require')
@@ -38,7 +39,7 @@ def get_db_connection():
         logger.error(f"Database connection failed: {e}")
         return None
 
-# --- OpenAI Prompt Logic ---
+# --- OpenAI Medical Analysis ---
 def generate_openai_response(symptoms, language, profile):
     prompt = f"""
 You are a professional medical assistant. Respond in this language: {language}.
@@ -82,7 +83,7 @@ Return JSON only:
         logger.error(f"OpenAI request failed: {e}")
         return None
 
-# --- JSON Parser with Fallback ---
+# --- Fallback if OpenAI JSON is malformed ---
 def parse_openai_json(reply):
     try:
         return json.loads(reply)
@@ -97,32 +98,62 @@ def parse_openai_json(reply):
             "detected_condition": "unsure"
         }
 
+# --- Google Maps Nearby Doctor Lookup ---
+def get_nearby_doctors(specialty, location):
+    try:
+        lat, lng = location.split(",")
+        url = "https://maps.googleapis.com/maps/api/place/nearbysearch/json"
+        params = {
+            "keyword": specialty,
+            "location": f"{lat},{lng}",
+            "radius": 5000,
+            "type": "doctor",
+            "key": GOOGLE_API_KEY
+        }
+        response = requests.get(url, params=params)
+        data = response.json()
+        doctors = []
+        for place in data.get("results", [])[:5]:
+            doctors.append({
+                "name": place.get("name"),
+                "address": place.get("vicinity"),
+                "rating": place.get("rating"),
+                "open_now": place.get("opening_hours", {}).get("open_now", "N/A")
+            })
+        return doctors
+    except Exception as e:
+        logger.error(f"Google Places API failed: {e}")
+        return []
+
 # --- Routes ---
 @app.route("/health", methods=["GET"])
 def health():
     return jsonify({"status": "ok"})
 
-@app.route("/emergency", methods=["GET"])
-def emergency():
-    return jsonify({"call": "911"})
-
 @app.route("/analyze", methods=["POST"])
 def analyze():
     auth = check_api_token()
-    if auth: return auth
+    if auth:
+        return auth
 
     data = request.json
     symptoms = data.get("symptoms", "")
     language = data.get("language", "English")
     profile = data.get("profile", "")
+    location = data.get("location", "")  # Format: "lat,lng"
 
     reply = generate_openai_response(symptoms, language, profile)
     if not reply:
         return jsonify({"error": "OpenAI failed to respond"}), 500
 
     parsed = parse_openai_json(reply)
+
+    # Optional: fetch real doctor options
+    if location and parsed.get("suggested_doctor"):
+        parsed["nearby_doctors"] = get_nearby_doctors(parsed["suggested_doctor"], location)
+
     return jsonify(parsed)
 
-# --- Main entrypoint for local run (Render uses gunicorn) ---
+# --- Main entrypoint (for local testing only) ---
 if __name__ == '__main__':
     app.run(debug=True)
