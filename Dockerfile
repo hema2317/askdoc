@@ -1,18 +1,18 @@
-# Use an official Python runtime as a parent image
+# Use an official Python runtime
 FROM python:3.10-slim
 
-# Set the working directory
+# Set working directory
 WORKDIR /app
 
-# Copy files
-COPY . /app
-
 # Install dependencies
+COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Expose the port
-ENV PORT 8080
-EXPOSE 8080
+# Copy app files
+COPY . .
 
-# Command to run your app
-CMD ["python", "app.py"]
+# Expose the port (Cloud Run uses $PORT)
+ENV PORT=8080
+
+# Run your Flask app
+CMD ["gunicorn", "-b", ":8080", "app:app"]
