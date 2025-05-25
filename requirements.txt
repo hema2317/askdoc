@@ -8,7 +8,7 @@ pytz==2024.1
 PyPDF2==3.0.1
 pandas==2.2.1
 matplotlib==3.8.3
-Pillow==10.3.0
+Pillow==9.5.0
 twilio==8.11.0
 gunicorn==21.2.0
 psycopg2-binary>=2.9.3
