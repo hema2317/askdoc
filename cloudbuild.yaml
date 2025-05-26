@@ -1,5 +1,8 @@
+options:
+  logging: CLOUD_LOGGING_ONLY
+
 steps:
-  # Step 1: Install Python dependencies
+  # Step 0: Install Python dependencies
   - name: 'python:3.11'
     id: Install Dependencies
     entrypoint: bash
@@ -9,7 +12,7 @@ steps:
         pip install --upgrade pip
         pip install -r requirements.txt
 
-  # Step 2: Lint check (optional)
+  # Step 1: Lint check (optional)
   - name: 'python:3.11'
     id: Lint Check
     entrypoint: bash
@@ -17,27 +20,29 @@ steps:
       - -c
       - |
         echo "Linting..."
-        flake8 || echo "Lint warnings, continuing..."
+        # Uncomment if flake8 is added to requirements.txt
+        # flake8 .
 
-  # Step 3: Confirm setup
+  # Step 2: Confirm backend is OK
   - name: 'python:3.11'
     id: Confirm Setup
     entrypoint: bash
-    args: ['-c', 'echo "✅ Flask backend setup validated in Cloud Build"']
+    args: ['-c', 'echo ✅ Flask backend setup validated in Cloud Build']
 
-  # Step 4: Deploy to Cloud Run
-  - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
+  # Step 3: Deploy to Cloud Run
+  - name: 'gcr.io/cloud-builders/gcloud'
     id: Deploy to Cloud Run
-    entrypoint: gcloud
     args:
-      - run
-      - deploy
-      - askdoc-backend
-      - --source=.
-      - --region=us-central1
-      - --platform=managed
-      - --allow-unauthenticated
-      - --port=8080
-      - --project=pure-archive-460800-b6
+      - 'run'
+      - 'deploy'
+      - 'askdoc-backend'               # <-- change to your service name
+      - '--image'
+      - 'gcr.io/$PROJECT_ID/askdoc-backend'  # <-- image name for deploy
+      - '--region'
+      - 'us-central1'                  # <-- or your chosen region
+      - '--platform'
+      - 'managed'
+      - '--allow-unauthenticated'      # public access
 
-timeout: 900s
+images:
+  - 'gcr.io/$PROJECT_ID/askdoc-backend'
