@@ -1,0 +1,152 @@
+body {
+  margin: 0;
+  font-family: 'Inter', sans-serif;
+  background: linear-gradient(to bottom right, #f7fbff, #e2f0f9);
+  color: #333;
+  display: flex;
+  justify-content: center;
+  padding: 2rem;
+  min-height: 100vh;
+}
+
+.chat-container {
+  background: #ffffff;
+  width: 100%;
+  max-width: 600px;
+  border-radius: 20px;
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.12);
+  padding: 2rem;
+  display: flex;
+  flex-direction: column;
+  gap: 1.5rem;
+  animation: fadeIn 0.6s ease-in-out;
+}
+
+@keyframes fadeIn {
+  from { opacity: 0; transform: translateY(10px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+header {
+  text-align: center;
+}
+
+header h1 {
+  margin: 0;
+  font-size: 2.2rem;
+  color: #0084ff;
+  font-weight: 700;
+}
+
+header p {
+  font-size: 1rem;
+  color: #666;
+}
+
+.chat-log {
+  background: #fefefe;
+  border-radius: 12px;
+  padding: 1rem;
+  max-height: 320px;
+  overflow-y: auto;
+  border: 1px solid #dde5ec;
+  font-size: 1rem;
+  line-height: 1.5;
+}
+
+.qa {
+  margin-bottom: 1.25rem;
+  padding-bottom: 1rem;
+  border-bottom: 1px dashed #ccd6dd;
+}
+
+form {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+textarea {
+  resize: none;
+  padding: 1rem;
+  border-radius: 10px;
+  border: 1px solid #cbd6e2;
+  font-size: 1rem;
+  font-family: 'Inter', sans-serif;
+  outline: none;
+  transition: border 0.2s, box-shadow 0.2s;
+  background: #fdfefe;
+}
+
+textarea:focus {
+  border-color: #0084ff;
+  box-shadow: 0 0 0 3px rgba(0, 132, 255, 0.1);
+}
+
+.controls {
+  display: flex;
+  gap: 0.6rem;
+  justify-content: space-between;
+  flex-wrap: wrap;
+}
+
+button, .file-upload {
+  padding: 0.7rem 1.3rem;
+  font-size: 1rem;
+  border-radius: 10px;
+  cursor: pointer;
+  border: none;
+  transition: all 0.2s ease-in-out;
+  font-weight: 500;
+}
+
+button:hover, .file-upload:hover {
+  background: #e6f4ff;
+  transform: translateY(-1.5px);
+}
+
+.ask-btn {
+  background: #0084ff;
+  color: white;
+  font-weight: bold;
+}
+
+.ask-btn:hover {
+  background: #006edc;
+}
+
+.file-upload {
+  background: #f1f1f1;
+  color: #555;
+  border: 1px solid #ccc;
+}
+
+.download-wrapper {
+  text-align: center;
+}
+
+.download-btn {
+  background: #00b894;
+  color: white;
+  padding: 0.8rem 1.8rem;
+  font-weight: 600;
+  border-radius: 12px;
+  font-size: 1rem;
+  margin-top: 1rem;
+}
+
+.download-btn:hover {
+  background: #00997a;
+}
+
+@media (max-width: 600px) {
+  .chat-container {
+    padding: 1rem;
+  }
+  .controls {
+    flex-direction: column;
+  }
+  button, .file-upload {
+    width: 100%;
+  }
+}

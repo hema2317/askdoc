@@ -1,0 +1,38 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>AskDoc - AI Health Assistant</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <link rel="stylesheet" href="/static/style.css" />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600&display=swap" rel="stylesheet">
+</head>
+<body>
+  <div class="chat-container">
+    <header>
+      <h1>🩺 AskDoc</h1>
+      <p>Your personal AI health assistant. Ask questions, upload reports, and get instant guidance.</p>
+    </header>
+
+    <div id="chatLog" class="chat-log"></div>
+
+    <form id="askForm">
+      <textarea id="query" placeholder="Type your health question here..." rows="3"></textarea>
+      <div class="controls">
+        <label class="file-upload">
+          📄 Upload
+          <input type="file" id="file" hidden />
+        </label>
+        <button type="button" onclick="startListening()">🎤 Speak</button>
+        <button type="submit" class="ask-btn">➤ Ask</button>
+      </div>
+    </form>
+
+    <div class="download-wrapper">
+      <button onclick="downloadPDF()" class="download-btn">📥 Download Chat as PDF</button>
+    </div>
+  </div>
+
+  <script src="/static/script.js"></script>
+</body>
+</html>

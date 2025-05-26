@@ -1,0 +1,55 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual environment
+venv/
+.env/
+.env.*
+
+# Secret / config files
+*.key
+*.pem
+*.crt
+*.p12
+*.env.local
+secrets/
+config/
+
+# Git
+.git/
+.gitignore
+
+# OS & Editor junk
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+*.swo
+*.bak
+
+# Python packaging
+*.egg-info/
+.eggs/
+dist/
+build/
+*.tar.gz
+*.whl
+
+# Logs and reports
+*.log
+logs/
+coverage/
+htmlcov/
+
+# Tests and examples
+tests/
+test/
+__tests__/
+
+# Docker development files
+Dockerfile.dev
+docker-compose.yml
+docker-compose.override.yml
