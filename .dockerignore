@@ -6,7 +6,7 @@ __pycache__/
 # Virtual environment
 venv/
 .env/
-.env.*  
+.env.*
 
 # Secret / config files
 *.key
@@ -49,8 +49,7 @@ tests/
 test/
 __tests__/
 
-# Dockerfile artifacts
-.dockerignore
+# Docker development files
 Dockerfile.dev
 docker-compose.yml
 docker-compose.override.yml
