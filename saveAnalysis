@@ -1,0 +1,28 @@
+// test.js
+import RNFS from 'react-native-fs';
+import { Platform } from 'react-native';
+
+const saveAnalysis = async (response) => {
+  const content = `
+Medical Analysis Report
+Date: ${new Date().toLocaleString()}
+Symptoms: ${response.symptoms || 'Not provided'}
+Analysis: ${response.medical_analysis || 'Not provided'}
+`.trim();
+
+  try {
+    if (Platform.OS === 'web') {
+      const blob = new Blob([content], { type: 'text/plain' });
+      console.log('Web: File would be downloaded as blob');
+      return;
+    }
+    const filePath = `${RNFS.DocumentDirectoryPath}/Test_Analysis.txt`;
+    await RNFS.writeFile(filePath, content, 'utf8');
+    console.log(`File saved to: ${filePath}`);
+  } catch (error) {
+    console.error('Save Error:', error);
+  }
+};
+
+// Test
+saveAnalysis({ symptoms: 'headache', medical_analysis: 'Possible migraine' });
