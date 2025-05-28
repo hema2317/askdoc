@@ -50,13 +50,15 @@ Symptoms:
 
 Please analyze this case and return a structured medical explanation:
 
+
 1. Detected condition
 2. Root cause
 3. Medical explanation
 4. Home remedies
 5. Urgency level (low, moderate, high)
 6. Suggested doctor type
-7. Any medicines mentioned
+7. Extract and list all medications mentioned by the user in the symptoms (e.g. “4 paracetamol”, “metformin 500mg”, etc.). 
+Be specific, include quantity or dose if stated.
 
 Return JSON only:
 {{
