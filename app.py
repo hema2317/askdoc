@@ -1,4 +1,3 @@
-
 import os
 import json
 import logging
@@ -43,7 +42,7 @@ def get_db_connection():
 
 # --- OpenAI Response ---
 def generate_openai_response(symptoms, language, profile):
-    prompt = f\"\"\"
+    prompt = f"""
 You are a professional medical assistant. Respond in this language: {language}.
 The user has this profile: {profile}
 
@@ -60,7 +59,7 @@ Analyze and return JSON only:
   "suggested_doctor": "...",
   "medicines": ["..."]
 }}
-\"\"\"
+"""
     try:
         response = openai.ChatCompletion.create(
             model="gpt-3.5-turbo",
