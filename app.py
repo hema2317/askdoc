@@ -178,32 +178,67 @@ def photo_analyze():
     if auth:
         return auth
 
-    data = request.json
-    image_b64 = data.get("base64_image", "")
-    language = data.get("language", "English")
-    profile = data.get("profile", "")
-    location = data.get("location", "")
+    try:
+        data = request.json
+        image_base64 = data.get("image")
+        profile = data.get("profile", "")
+        language = data.get("language", "English")
 
-    if not image_b64:
-        return jsonify({"error": "Missing image"}), 400
+        if not image_base64:
+            return jsonify({"error": "Image data missing"}), 400
 
-    labels = analyze_image_with_vision(image_b64)
-    if not labels:
-        return jsonify({"error": "Failed to read image"}), 500
+        # Step 1: Use Google Vision API to detect labels from image
+        vision_url = f"https://vision.googleapis.com/v1/images:annotate?key={GOOGLE_VISION_API_KEY}"
+        vision_payload = {
+            "requests": [
+                {
+                    "image": {"content": image_base64},
+                    "features": [{"type": "LABEL_DETECTION", "maxResults": 5}]
+                }
+            ]
+        }
+        vision_response = requests.post(vision_url, json=vision_payload)
+        labels = vision_response.json().get("responses", [{}])[0].get("labelAnnotations", [])
 
-    symptoms_text = ", ".join(labels)
-    logger.info(f"Photo labels: {symptoms_text}")
+        keywords = ", ".join([label["description"] for label in labels]) if labels else "unknown skin condition"
 
-    reply = generate_openai_response(symptoms_text, language, profile)
-    if not reply:
-        return jsonify({"error": "OpenAI failed"}), 500
+        # Step 2: Pass result to OpenAI for medical suggestion
+        prompt = f"""
+The user uploaded a photo and Google Vision detected these labels: {keywords}
 
-    parsed = parse_openai_json(reply)
+Patient Profile:
+{profile}
 
-    if location and parsed.get("suggested_doctor"):
-        parsed["nearby_doctors"] = get_nearby_doctors(parsed["suggested_doctor"], location)
+Please diagnose the possible condition, explain medically, list remedies, urgency, and doctor type.
 
-    return jsonify(parsed)
+Return JSON:
+{{
+  "detected_condition": "...",
+  "medical_analysis": "...",
+  "root_cause": "...",
+  "remedies": ["..."],
+  "urgency": "...",
+  "suggested_doctor": "...",
+  "medicines": ["..."]
+}}
+"""
+        openai_response = openai.ChatCompletion.create(
+            model="gpt-3.5-turbo",
+            messages=[
+                {"role": "system", "content": "You are a helpful dermatologist assistant."},
+                {"role": "user", "content": prompt}
+            ],
+            temperature=0.5,
+        )
+        reply = openai_response['choices'][0]['message']['content']
+        parsed = parse_openai_json(reply)
+
+        return jsonify(parsed)
+
+    except Exception as e:
+        logger.error(f"Photo analysis failed: {e}")
+        return jsonify({"error": "Photo analysis failed"}), 500
+
 
 # --- Main ---
 if __name__ == "__main__":
