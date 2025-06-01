@@ -1,3 +1,4 @@
+
 import os
 import json
 import logging
@@ -8,10 +9,12 @@ import openai
 import requests
 import psycopg2
 from psycopg2 import OperationalError
+import base64
 
-# --- Setup ---
+# --- App Setup ---
 app = Flask(__name__)
-CORS(app)
+CORS(app, resources={r"/*": {"origins": "*"}})
+
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
@@ -24,13 +27,13 @@ API_AUTH_TOKEN = os.getenv("API_AUTH_TOKEN")
 
 openai.api_key = OPENAI_API_KEY
 
-# --- Middleware ---
+# --- Auth Check ---
 def check_api_token():
     auth = request.headers.get("Authorization")
     if not auth or auth != f"Bearer {API_AUTH_TOKEN}":
         return jsonify({"error": "Unauthorized"}), 401
 
-# --- DB connection (optional) ---
+# --- DB Connection ---
 def get_db_connection():
     try:
         return psycopg2.connect(DATABASE_URL, sslmode='require')
@@ -38,7 +41,55 @@ def get_db_connection():
         logger.error(f"Database connection failed: {e}")
         return None
 
-# --- Google Maps: Get nearby doctors ---
+# --- OpenAI Response ---
+def generate_openai_response(symptoms, language, profile):
+    prompt = f\"\"\"
+You are a professional medical assistant. Respond in this language: {language}.
+The user has this profile: {profile}
+
+Symptoms:
+"{symptoms}"
+
+Analyze and return JSON only:
+{{
+  "detected_condition": "...",
+  "medical_analysis": "...",
+  "root_cause": "...",
+  "remedies": ["...", "..."],
+  "urgency": "low | moderate | high",
+  "suggested_doctor": "...",
+  "medicines": ["..."]
+}}
+\"\"\"
+    try:
+        response = openai.ChatCompletion.create(
+            model="gpt-3.5-turbo",
+            messages=[
+                {"role": "system", "content": "You are a helpful multilingual health assistant."},
+                {"role": "user", "content": prompt}
+            ],
+            temperature=0.4
+        )
+        return response['choices'][0]['message']['content']
+    except Exception as e:
+        logger.error(f"OpenAI request failed: {e}")
+        return None
+
+def parse_openai_json(reply):
+    try:
+        return json.loads(reply)
+    except json.JSONDecodeError:
+        return {
+            "medical_analysis": reply or "No response from OpenAI.",
+            "root_cause": "Unknown",
+            "remedies": [],
+            "urgency": "unknown",
+            "medicines": [],
+            "suggested_doctor": "general",
+            "detected_condition": "unsure"
+        }
+
+# --- Nearby Doctor Lookup ---
 def get_nearby_doctors(specialty, location):
     try:
         lat, lng = location.split(",")
@@ -51,9 +102,8 @@ def get_nearby_doctors(specialty, location):
             "key": GOOGLE_API_KEY
         }
         response = requests.get(url, params=params)
-        data = response.json()
         doctors = []
-        for place in data.get("results", [])[:5]:
+        for place in response.json().get("results", [])[:5]:
             doctors.append({
                 "name": place.get("name"),
                 "address": place.get("vicinity"),
@@ -62,86 +112,24 @@ def get_nearby_doctors(specialty, location):
             })
         return doctors
     except Exception as e:
-        logger.error(f"Google Places API failed: {e}")
+        logger.error(f"Google Maps API failed: {e}")
         return []
 
-# --- OpenAI prompt ---
-def generate_openai_response(symptoms, language, profile):
-    prompt = f"""
-You are a professional medical assistant. Respond in this language: {language}.
-The user has this profile: {profile}
-
-Symptoms:
-"{symptoms}"
-
-Please analyze this case and return a structured medical explanation:
-
-1. Detected condition
-2. Root cause
-3. Medical explanation
-4. Home remedies
-5. Urgency level (low, moderate, high)
-6. Suggested doctor type
-7. Extract and list all medications mentioned
-
-Return JSON:
-{{
-  "detected_condition": "...",
-  "medical_analysis": "...",
-  "root_cause": "...",
-  "remedies": ["..."],
-  "urgency": "low | moderate | high",
-  "suggested_doctor": "...",
-  "medicines": ["..."]
-}}
-"""
-    try:
-        res = openai.ChatCompletion.create(
-            model="gpt-3.5-turbo",
-            messages=[
-                {"role": "system", "content": "You are a helpful multilingual health assistant."},
-                {"role": "user", "content": prompt}
-            ],
-            temperature=0.5,
-        )
-        return res['choices'][0]['message']['content']
-    except Exception as e:
-        logger.error(f"OpenAI error: {e}")
-        return None
-
-def parse_openai_json(reply):
-    try:
-        return json.loads(reply)
-    except Exception as e:
-        logger.error(f"Parsing OpenAI response failed: {e}")
-        return {
-            "medical_analysis": reply or "No response",
-            "root_cause": "Unknown",
-            "remedies": [],
-            "urgency": "unknown",
-            "medicines": [],
-            "suggested_doctor": "general",
-            "detected_condition": "unsure"
-        }
-
-# --- Google Vision API ---
-def analyze_image_with_vision(base64_image):
+# --- Google Vision Labeling ---
+def get_image_labels(base64_image):
     try:
         url = f"https://vision.googleapis.com/v1/images:annotate?key={GOOGLE_VISION_API_KEY}"
-        payload = {
-            "requests": [
-                {
-                    "image": {"content": base64_image},
-                    "features": [{"type": "LABEL_DETECTION", "maxResults": 10}]
-                }
-            ]
+        body = {
+            "requests": [{
+                "image": {"content": base64_image},
+                "features": [{"type": "LABEL_DETECTION", "maxResults": 5}]
+            }]
         }
-        headers = {'Content-Type': 'application/json'}
-        res = requests.post(url, headers=headers, json=payload)
-        labels = res.json()['responses'][0].get('labelAnnotations', [])
-        return [label['description'] for label in labels]
+        res = requests.post(url, json=body)
+        labels = [label['description'] for label in res.json()["responses"][0]["labelAnnotations"]]
+        return labels
     except Exception as e:
-        logger.error(f"Google Vision error: {e}")
+        logger.error(f"Vision API error: {e}")
         return []
 
 # --- Routes ---
@@ -161,6 +149,7 @@ def analyze():
     profile = data.get("profile", "")
     location = data.get("location", "")
 
+    logger.info(f"[ANALYZE] Input: {symptoms}")
     reply = generate_openai_response(symptoms, language, profile)
     if not reply:
         return jsonify({"error": "OpenAI failed"}), 500
@@ -173,73 +162,28 @@ def analyze():
     return jsonify(parsed)
 
 @app.route("/photo-analyze", methods=["POST"])
-def photo_analyze():
+def analyze_photo():
     auth = check_api_token()
     if auth:
         return auth
 
-    try:
-        data = request.json
-        image_base64 = data.get("image")
-        profile = data.get("profile", "")
-        language = data.get("language", "English")
+    data = request.get_json()
+    logger.info(f"📸 /photo-analyze request: {data.keys()}")
 
-        if not image_base64:
-            return jsonify({"error": "Image data missing"}), 400
+    image_base64 = data.get("image_base64")
+    if not image_base64:
+        return jsonify({"error": "Missing image"}), 400
 
-        # Step 1: Use Google Vision API to detect labels from image
-        vision_url = f"https://vision.googleapis.com/v1/images:annotate?key={GOOGLE_VISION_API_KEY}"
-        vision_payload = {
-            "requests": [
-                {
-                    "image": {"content": image_base64},
-                    "features": [{"type": "LABEL_DETECTION", "maxResults": 5}]
-                }
-            ]
-        }
-        vision_response = requests.post(vision_url, json=vision_payload)
-        labels = vision_response.json().get("responses", [{}])[0].get("labelAnnotations", [])
+    labels = get_image_labels(image_base64)
+    logger.info(f"🧠 Labels from Vision API: {labels}")
 
-        keywords = ", ".join([label["description"] for label in labels]) if labels else "unknown skin condition"
+    prompt = f"This image likely shows: {', '.join(labels)}. Provide diagnosis as a medical assistant."
 
-        # Step 2: Pass result to OpenAI for medical suggestion
-        prompt = f"""
-The user uploaded a photo and Google Vision detected these labels: {keywords}
+    reply = generate_openai_response(prompt, "English", profile="Photo-based analysis")
+    parsed = parse_openai_json(reply)
+    parsed["image_labels"] = labels
+    return jsonify(parsed)
 
-Patient Profile:
-{profile}
-
-Please diagnose the possible condition, explain medically, list remedies, urgency, and doctor type.
-
-Return JSON:
-{{
-  "detected_condition": "...",
-  "medical_analysis": "...",
-  "root_cause": "...",
-  "remedies": ["..."],
-  "urgency": "...",
-  "suggested_doctor": "...",
-  "medicines": ["..."]
-}}
-"""
-        openai_response = openai.ChatCompletion.create(
-            model="gpt-3.5-turbo",
-            messages=[
-                {"role": "system", "content": "You are a helpful dermatologist assistant."},
-                {"role": "user", "content": prompt}
-            ],
-            temperature=0.5,
-        )
-        reply = openai_response['choices'][0]['message']['content']
-        parsed = parse_openai_json(reply)
-
-        return jsonify(parsed)
-
-    except Exception as e:
-        logger.error(f"Photo analysis failed: {e}")
-        return jsonify({"error": "Photo analysis failed"}), 500
-
-
-# --- Main ---
-if __name__ == "__main__":
+# --- Entrypoint ---
+if __name__ == '__main__':
     app.run(debug=True)
