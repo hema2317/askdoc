@@ -9,10 +9,9 @@ import requests
 import psycopg2
 from psycopg2 import OperationalError
 
-# --- App Setup ---
+# --- Setup ---
 app = Flask(__name__)
-CORS(app, resources={r"/*": {"origins": "*"}})
-
+CORS(app)
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
@@ -25,13 +24,13 @@ API_AUTH_TOKEN = os.getenv("API_AUTH_TOKEN")
 
 openai.api_key = OPENAI_API_KEY
 
-# --- Middleware: Check API token ---
+# --- Middleware ---
 def check_api_token():
     auth = request.headers.get("Authorization")
     if not auth or auth != f"Bearer {API_AUTH_TOKEN}":
         return jsonify({"error": "Unauthorized"}), 401
 
-# --- Optional DB Connection ---
+# --- DB connection (optional) ---
 def get_db_connection():
     try:
         return psycopg2.connect(DATABASE_URL, sslmode='require')
@@ -39,68 +38,7 @@ def get_db_connection():
         logger.error(f"Database connection failed: {e}")
         return None
 
-# --- OpenAI Medical Analysis ---
-def generate_openai_response(symptoms, language, profile):
-    prompt = f"""
-You are a professional medical assistant. Respond in this language: {language}.
-The user has this profile: {profile}
-
-Symptoms:
-"{symptoms}"
-
-Please analyze this case and return a structured medical explanation:
-
-
-1. Detected condition
-2. Root cause
-3. Medical explanation
-4. Home remedies
-5. Urgency level (low, moderate, high)
-6. Suggested doctor type
-7. Extract and list all medications mentioned by the user in the symptoms (e.g. “4 paracetamol”, “metformin 500mg”, etc.). 
-Be specific, include quantity or dose if stated.
-
-Return JSON only:
-{{
-  "detected_condition": "...",
-  "medical_analysis": "...",
-  "root_cause": "...",
-  "remedies": ["...", "..."],
-  "urgency": "low | moderate | high",
-  "suggested_doctor": "...",
-  "medicines": ["..."]
-}}
-"""
-    try:
-        response = openai.ChatCompletion.create(
-            model="gpt-3.5-turbo",
-            messages=[
-                {"role": "system", "content": "You are a helpful multilingual health assistant."},
-                {"role": "user", "content": prompt}
-            ],
-            temperature=0.4
-        )
-        return response['choices'][0]['message']['content']
-    except Exception as e:
-        logger.error(f"OpenAI request failed: {e}")
-        return None
-
-# --- Fallback if OpenAI JSON is malformed ---
-def parse_openai_json(reply):
-    try:
-        return json.loads(reply)
-    except json.JSONDecodeError:
-        return {
-            "medical_analysis": reply or "No response from OpenAI.",
-            "root_cause": "Unknown due to parsing error",
-            "remedies": [],
-            "urgency": "unknown",
-            "medicines": [],
-            "suggested_doctor": "general",
-            "detected_condition": "unsure"
-        }
-
-# --- Google Maps Nearby Doctor Lookup ---
+# --- Google Maps: Get nearby doctors ---
 def get_nearby_doctors(specialty, location):
     try:
         lat, lng = location.split(",")
@@ -127,6 +65,85 @@ def get_nearby_doctors(specialty, location):
         logger.error(f"Google Places API failed: {e}")
         return []
 
+# --- OpenAI prompt ---
+def generate_openai_response(symptoms, language, profile):
+    prompt = f"""
+You are a professional medical assistant. Respond in this language: {language}.
+The user has this profile: {profile}
+
+Symptoms:
+"{symptoms}"
+
+Please analyze this case and return a structured medical explanation:
+
+1. Detected condition
+2. Root cause
+3. Medical explanation
+4. Home remedies
+5. Urgency level (low, moderate, high)
+6. Suggested doctor type
+7. Extract and list all medications mentioned
+
+Return JSON:
+{{
+  "detected_condition": "...",
+  "medical_analysis": "...",
+  "root_cause": "...",
+  "remedies": ["..."],
+  "urgency": "low | moderate | high",
+  "suggested_doctor": "...",
+  "medicines": ["..."]
+}}
+"""
+    try:
+        res = openai.ChatCompletion.create(
+            model="gpt-3.5-turbo",
+            messages=[
+                {"role": "system", "content": "You are a helpful multilingual health assistant."},
+                {"role": "user", "content": prompt}
+            ],
+            temperature=0.5,
+        )
+        return res['choices'][0]['message']['content']
+    except Exception as e:
+        logger.error(f"OpenAI error: {e}")
+        return None
+
+def parse_openai_json(reply):
+    try:
+        return json.loads(reply)
+    except Exception as e:
+        logger.error(f"Parsing OpenAI response failed: {e}")
+        return {
+            "medical_analysis": reply or "No response",
+            "root_cause": "Unknown",
+            "remedies": [],
+            "urgency": "unknown",
+            "medicines": [],
+            "suggested_doctor": "general",
+            "detected_condition": "unsure"
+        }
+
+# --- Google Vision API ---
+def analyze_image_with_vision(base64_image):
+    try:
+        url = f"https://vision.googleapis.com/v1/images:annotate?key={GOOGLE_VISION_API_KEY}"
+        payload = {
+            "requests": [
+                {
+                    "image": {"content": base64_image},
+                    "features": [{"type": "LABEL_DETECTION", "maxResults": 10}]
+                }
+            ]
+        }
+        headers = {'Content-Type': 'application/json'}
+        res = requests.post(url, headers=headers, json=payload)
+        labels = res.json()['responses'][0].get('labelAnnotations', [])
+        return [label['description'] for label in labels]
+    except Exception as e:
+        logger.error(f"Google Vision error: {e}")
+        return []
+
 # --- Routes ---
 @app.route("/health", methods=["GET"])
 def health():
@@ -142,20 +159,52 @@ def analyze():
     symptoms = data.get("symptoms", "")
     language = data.get("language", "English")
     profile = data.get("profile", "")
-    location = data.get("location", "")  # Format: "lat,lng"
+    location = data.get("location", "")
 
     reply = generate_openai_response(symptoms, language, profile)
     if not reply:
-        return jsonify({"error": "OpenAI failed to respond"}), 500
+        return jsonify({"error": "OpenAI failed"}), 500
 
     parsed = parse_openai_json(reply)
 
-    # Optional: fetch real doctor options
     if location and parsed.get("suggested_doctor"):
         parsed["nearby_doctors"] = get_nearby_doctors(parsed["suggested_doctor"], location)
 
     return jsonify(parsed)
 
-# --- Main entrypoint (for local testing only) ---
-if __name__ == '__main__':
+@app.route("/photo-analyze", methods=["POST"])
+def photo_analyze():
+    auth = check_api_token()
+    if auth:
+        return auth
+
+    data = request.json
+    image_b64 = data.get("base64_image", "")
+    language = data.get("language", "English")
+    profile = data.get("profile", "")
+    location = data.get("location", "")
+
+    if not image_b64:
+        return jsonify({"error": "Missing image"}), 400
+
+    labels = analyze_image_with_vision(image_b64)
+    if not labels:
+        return jsonify({"error": "Failed to read image"}), 500
+
+    symptoms_text = ", ".join(labels)
+    logger.info(f"Photo labels: {symptoms_text}")
+
+    reply = generate_openai_response(symptoms_text, language, profile)
+    if not reply:
+        return jsonify({"error": "OpenAI failed"}), 500
+
+    parsed = parse_openai_json(reply)
+
+    if location and parsed.get("suggested_doctor"):
+        parsed["nearby_doctors"] = get_nearby_doctors(parsed["suggested_doctor"], location)
+
+    return jsonify(parsed)
+
+# --- Main ---
+if __name__ == "__main__":
     app.run(debug=True)
