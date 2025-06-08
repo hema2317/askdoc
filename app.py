@@ -160,29 +160,26 @@ def analyze():
 
     return jsonify(parsed)
 
-@app.route("/photo-analyze", methods=["POST"])
-def analyze_photo():
+@app.route("/api/ask", methods=["POST"])
+def ask():
     auth = check_api_token()
     if auth:
         return auth
 
     data = request.get_json()
-    logger.info(f"📸 /photo-analyze request: {data.keys()}")
+    question = data.get("question", "")
+    if not question:
+        return jsonify({"error": "No question provided"}), 400
 
-    image_base64 = data.get("image_base64")
-    if not image_base64:
-        return jsonify({"error": "Missing image"}), 400
-
-    labels = get_image_labels(image_base64)
-    logger.info(f"🧠 Labels from Vision API: {labels}")
-
-    prompt = f"This image likely shows: {', '.join(labels)}. Provide diagnosis as a medical assistant."
-
-    reply = generate_openai_response(prompt, "English", profile="Photo-based analysis")
-    parsed = parse_openai_json(reply)
-    parsed["image_labels"] = labels
-    return jsonify(parsed)
-
-# --- Entrypoint ---
-if __name__ == '__main__':
-    app.run(debug=True)
+    logger.info(f"[ASK] Question: {question}")
+    try:
+        response = openai.ChatCompletion.create(
+            model="gpt-3.5-turbo",
+            messages=[{ "role": "user", "content": question }],
+            temperature=0.5
+        )
+        reply = response["choices"][0]["message"]["content"]
+        return jsonify({ "reply": reply })
+    except Exception as e:
+        logger.error(f"OpenAI Error in /ask: {e}")
+        return jsonify({ "error": "OpenAI request failed" }), 500
