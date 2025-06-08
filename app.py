@@ -109,16 +109,19 @@ def get_nearby_doctors(specialty, location):
             "location": f"{lat},{lng}",
             "radius": 5000,
             "type": "doctor",
-            "key": GOOGLE_API_KEY
+            "key": GOOGLE_API_KEY,
+            "rankby": "prominence"
         }
         response = requests.get(url, params=params)
+        sorted_results = sorted(response.json().get("results", []), key=lambda x: x.get("rating", 0), reverse=True)
         doctors = []
-        for place in response.json().get("results", [])[:5]:
+        for place in sorted_results[:5]:
             doctors.append({
                 "name": place.get("name"),
                 "address": place.get("vicinity"),
                 "rating": place.get("rating"),
-                "open_now": place.get("opening_hours", {}).get("open_now", "N/A")
+                "open_now": place.get("opening_hours", {}).get("open_now", "N/A"),
+                "maps_link": f"https://www.google.com/maps/search/?api=1&query=Google&query_place_id={place.get('place_id')}"
             })
         return doctors
     except Exception as e:
@@ -202,14 +205,14 @@ def analyze_photo():
         return auth
 
     data = request.get_json()
-    logger.info(f"\ud83d\udcf8 /photo-analyze request: {data.keys()}")
+    logger.info(f"📸 /photo-analyze request: {data.keys()}")
 
     image_base64 = data.get("image_base64")
     if not image_base64:
         return jsonify({"error": "Missing image"}), 400
 
     labels = get_image_labels(image_base64)
-    logger.info(f"\ud83e\udde0 Labels from Vision API: {labels}")
+    logger.info(f"🧠 Labels from Vision API: {labels}")
 
     prompt = f"This image likely shows: {', '.join(labels)}. Provide diagnosis as a medical assistant."
     reply = generate_openai_response(prompt, "English", profile="Photo-based analysis")
