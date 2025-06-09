@@ -205,14 +205,14 @@ def analyze_photo():
         return auth
 
     data = request.get_json()
-    logger.info(f"📸 /photo-analyze request: {data.keys()}")
+    logger.info(f"\ud83d\udcf8 /photo-analyze request: {data.keys()}")
 
     image_base64 = data.get("image_base64")
     if not image_base64:
         return jsonify({"error": "Missing image"}), 400
 
     labels = get_image_labels(image_base64)
-    logger.info(f"🧠 Labels from Vision API: {labels}")
+    logger.info(f"\ud83e\udde0 Labels from Vision API: {labels}")
 
     prompt = f"This image likely shows: {', '.join(labels)}. Provide diagnosis as a medical assistant."
     reply = generate_openai_response(prompt, "English", profile="Photo-based analysis")
