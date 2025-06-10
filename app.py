@@ -211,33 +211,29 @@ def analyze_photo():
     parsed["image_labels"] = labels
     return jsonify(parsed)
 
-@app.route("/labreport-analyze", methods=["POST"])
-def labreport_analyze():
+@app.route("/analyze-lab-report", methods=["POST"])
+def analyze_lab_report():
     auth = check_api_token()
     if auth:
         return auth
 
     data = request.get_json()
-    base64_text = data.get("extracted_text")
+    extracted_text = data.get("extracted_text")
     location = data.get("location", "")
-    language = data.get("language", "English")
     profile = data.get("profile", "")
+    language = data.get("language", "English")
 
-    if not base64_text:
+    if not extracted_text:
         return jsonify({"error": "Missing lab report text"}), 400
 
-    logger.info("🧾 Analyzing Lab Report")
-    reply = generate_openai_response(base64_text, language, profile)
+    logger.info("🔬 /analyze-lab-report processing lab report text")
+    reply = generate_openai_response(extracted_text, language, profile)
     parsed = parse_openai_json(reply)
 
     if location and parsed.get("suggested_doctor"):
         parsed["nearby_doctors"] = get_nearby_doctors(parsed["suggested_doctor"], location)
 
     return jsonify(parsed)
-
-@app.route("/analyze-lab-report", methods=["POST"])
-def alias_labreport_analyze():
-    return labreport_analyze()
 
 if __name__ == '__main__':
     app.run(debug=True)
