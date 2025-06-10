@@ -218,15 +218,35 @@ def analyze_lab_report():
         return auth
 
     data = request.get_json()
-    extracted_text = data.get("extracted_text")
+    image_base64 = data.get("image_base64")
+    extracted_text = data.get("extracted_text", "")
     location = data.get("location", "")
     profile = data.get("profile", "")
     language = data.get("language", "English")
 
-    if not extracted_text:
-        return jsonify({"error": "Missing lab report text"}), 400
+    if not extracted_text and not image_base64:
+        return jsonify({"error": "Missing lab report text or image"}), 400
 
-    logger.info("🔬 /analyze-lab-report processing lab report text")
+    # If text not provided, extract from image
+    if not extracted_text and image_base64:
+        try:
+            url = f"https://vision.googleapis.com/v1/images:annotate?key={GOOGLE_VISION_API_KEY}"
+            body = {
+                "requests": [{
+                    "image": {"content": image_base64},
+                    "features": [{"type": "TEXT_DETECTION"}]
+                }]
+            }
+            res = requests.post(url, json=body)
+            annotations = res.json()["responses"][0]
+            extracted_text = annotations.get("fullTextAnnotation", {}).get("text", "")
+            if not extracted_text:
+                return jsonify({"error": "OCR failed to extract text"}), 500
+        except Exception as e:
+            logger.error(f"Vision OCR error: {e}")
+            return jsonify({"error": "OCR processing failed"}), 500
+
+    logger.info("🧪 /analyze-lab-report analyzing extracted lab report text")
     reply = generate_openai_response(extracted_text, language, profile)
     if not reply:
         return jsonify({"error": "OpenAI failed"}), 500
@@ -236,7 +256,9 @@ def analyze_lab_report():
     if location and parsed.get("suggested_doctor"):
         parsed["nearby_doctors"] = get_nearby_doctors(parsed["suggested_doctor"], location)
 
+    parsed["extracted_text"] = extracted_text
     return jsonify(parsed)
+
 
 if __name__ == '__main__':
     app.run(debug=True)
