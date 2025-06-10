@@ -128,22 +128,21 @@ def get_nearby_doctors(specialty, location):
         logger.error(f"Google Maps API failed: {e}")
         return []
 
-# --- Google Vision Labeling ---
-def get_image_labels(base64_image):
+# --- OCR Text Extraction ---
+def extract_text_from_image(base64_image):
     try:
         url = f"https://vision.googleapis.com/v1/images:annotate?key={GOOGLE_VISION_API_KEY}"
         body = {
             "requests": [{
                 "image": {"content": base64_image},
-                "features": [{"type": "LABEL_DETECTION", "maxResults": 5}]
+                "features": [{"type": "TEXT_DETECTION"}]
             }]
         }
         res = requests.post(url, json=body)
-        labels = [label['description'] for label in res.json()["responses"][0]["labelAnnotations"]]
-        return labels
+        return res.json()["responses"][0].get("fullTextAnnotation", {}).get("text", "")
     except Exception as e:
-        logger.error(f"Vision API error: {e}")
-        return []
+        logger.error(f"OCR failed: {e}")
+        return ""
 
 # --- Routes ---
 @app.route("/health", methods=["GET"])
@@ -162,62 +161,41 @@ def analyze():
     profile = data.get("profile", "")
     location = data.get("location", "")
 
-    logger.info(f"[ANALYZE] Input: {symptoms}")
     reply = generate_openai_response(symptoms, language, profile)
     if not reply:
         return jsonify({"error": "OpenAI failed"}), 500
 
     parsed = parse_openai_json(reply)
-
     if location and parsed.get("suggested_doctor"):
         parsed["nearby_doctors"] = get_nearby_doctors(parsed["suggested_doctor"], location)
 
     return jsonify(parsed)
 
-@app.route("/api/ask", methods=["POST"])
-def ask():
+@app.route("/labreport-analyze", methods=["POST"])
+def analyze_labreport():
     auth = check_api_token()
     if auth:
         return auth
 
     data = request.get_json()
-    question = data.get("question", "")
-    if not question:
-        return jsonify({"error": "No question provided"}), 400
-
-    logger.info(f"[ASK] Question: {question}")
-    try:
-        response = openai.ChatCompletion.create(
-            model="gpt-3.5-turbo",
-            messages=[{ "role": "user", "content": question }],
-            temperature=0.5
-        )
-        reply = response["choices"][0]["message"]["content"]
-        return jsonify({ "reply": reply })
-    except Exception as e:
-        logger.error(f"OpenAI Error in /ask: {e}")
-        return jsonify({ "error": "OpenAI request failed" }), 500
-
-@app.route("/photo-analyze", methods=["POST"])
-def analyze_photo():
-    auth = check_api_token()
-    if auth:
-        return auth
-
-    data = request.get_json()
-    logger.info(f"\ud83d\udcf8 /photo-analyze request: {data.keys()}")
-
     image_base64 = data.get("image_base64")
+    language = data.get("language", "English")
+    profile = data.get("profile", "")
+    location = data.get("location", "")
+
     if not image_base64:
-        return jsonify({"error": "Missing image"}), 400
+        return jsonify({"error": "Missing lab report image"}), 400
 
-    labels = get_image_labels(image_base64)
-    logger.info(f"\ud83e\udde0 Labels from Vision API: {labels}")
+    text = extract_text_from_image(image_base64)
+    if not text.strip():
+        return jsonify({"error": "No text extracted from lab report"}), 400
 
-    prompt = f"This image likely shows: {', '.join(labels)}. Provide diagnosis as a medical assistant."
-    reply = generate_openai_response(prompt, "English", profile="Photo-based analysis")
+    reply = generate_openai_response(text, language, profile)
     parsed = parse_openai_json(reply)
-    parsed["image_labels"] = labels
+    if location and parsed.get("suggested_doctor"):
+        parsed["nearby_doctors"] = get_nearby_doctors(parsed["suggested_doctor"], location)
+
+    parsed["extracted_text"] = text
     return jsonify(parsed)
 
 # --- Entrypoint ---
