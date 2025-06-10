@@ -228,6 +228,9 @@ def analyze_lab_report():
 
     logger.info("🔬 /analyze-lab-report processing lab report text")
     reply = generate_openai_response(extracted_text, language, profile)
+    if not reply:
+        return jsonify({"error": "OpenAI failed"}), 500
+
     parsed = parse_openai_json(reply)
 
     if location and parsed.get("suggested_doctor"):
