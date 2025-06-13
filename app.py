@@ -44,8 +44,7 @@ def build_profile_context(profile_json):
     lines = []
     if name := profile.get("name"):
         lines.append(f"Name: {name}")
-    if dob := profile.get("dob"):
-        age = calculate_age(dob)
+    if age := profile.get("age"):
         lines.append(f"Age: {age}")
     if gender := profile.get("gender"):
         lines.append(f"Gender: {gender}")
@@ -53,16 +52,21 @@ def build_profile_context(profile_json):
         lines.append(f"Blood Type: {blood}")
     if state := profile.get("state"):
         lines.append(f"State: {state}")
-    if known := profile.get("known_diseases"):
-        lines.append("Known Diseases: " + ", ".join(known))
+    if known := profile.get("conditions"):
+        lines.append("Medical Conditions: " + ", ".join(known))
     if family := profile.get("family_history"):
         lines.append("Family History: " + ", ".join(family))
-    if smoking := profile.get("smoking"):
-        lines.append("Smoking Habits: " + ", ".join(smoking))
+    if smoke := profile.get("smoker"):
+        lines.append(f"Smoker: {smoke}")
+    if drink := profile.get("drinker"):
+        lines.append(f"Drinker: {drink}")
     if exercise := profile.get("exercise"):
-        lines.append("Exercise Habits: " + ", ".join(exercise))
+        lines.append(f"Exercise: {exercise}")
+    if meds := profile.get("medications"):
+        lines.append("Current Medications: " + ", ".join(meds))
 
     return "\n".join(lines)
+
 
 def calculate_age(dob_str):
     try:
