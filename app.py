@@ -35,6 +35,42 @@ def get_db_connection():
     except OperationalError as e:
         logger.error(f"Database connection failed: {e}")
         return None
+def build_profile_context(profile_json):
+    try:
+        profile = json.loads(profile_json) if isinstance(profile_json, str) else profile_json
+    except Exception:
+        return "No additional profile context available."
+
+    lines = []
+    if name := profile.get("name"):
+        lines.append(f"Name: {name}")
+    if dob := profile.get("dob"):
+        age = calculate_age(dob)
+        lines.append(f"Age: {age}")
+    if gender := profile.get("gender"):
+        lines.append(f"Gender: {gender}")
+    if blood := profile.get("blood_type"):
+        lines.append(f"Blood Type: {blood}")
+    if state := profile.get("state"):
+        lines.append(f"State: {state}")
+    if known := profile.get("known_diseases"):
+        lines.append("Known Diseases: " + ", ".join(known))
+    if family := profile.get("family_history"):
+        lines.append("Family History: " + ", ".join(family))
+    if smoking := profile.get("smoking"):
+        lines.append("Smoking Habits: " + ", ".join(smoking))
+    if exercise := profile.get("exercise"):
+        lines.append("Exercise Habits: " + ", ".join(exercise))
+
+    return "\n".join(lines)
+
+def calculate_age(dob_str):
+    try:
+        dob = datetime.strptime(dob_str, "%Y-%m-%d")
+        today = datetime.today()
+        return today.year - dob.year - ((today.month, today.day) < (dob.month, dob.day))
+    except Exception:
+        return "Unknown"
 
 def generate_openai_response(symptoms, language, profile):
     prompt = f"""
@@ -154,7 +190,9 @@ def analyze():
     location = data.get("location", "")
 
     logger.info(f"[ANALYZE] Input: {symptoms}")
-    reply = generate_openai_response(symptoms, language, profile)
+    profile_context = build_profile_context(profile)
+    reply = generate_openai_response(symptoms, language, profile_context)
+
     if not reply:
         return jsonify({"error": "OpenAI failed"}), 500
 
@@ -206,7 +244,7 @@ def analyze_photo():
     logger.info(f"🧠 Labels from Vision API: {labels}")
 
     prompt = f"This image likely shows: {', '.join(labels)}. Provide diagnosis as a medical assistant."
-    reply = generate_openai_response(prompt, "English", profile="Photo-based analysis")
+    reply = generate_openai_response(prompt, "English", build_profile_context("Photo-based analysis"))
     parsed = parse_openai_json(reply)
     parsed["image_labels"] = labels
     return jsonify(parsed)
@@ -247,7 +285,9 @@ def analyze_lab_report():
             return jsonify({"error": "OCR processing failed"}), 500
 
     logger.info("🧪 /analyze-lab-report analyzing extracted lab report text")
-    reply = generate_openai_response(extracted_text, language, profile)
+    profile_context = build_profile_context(profile)
+    reply = generate_openai_response(extracted_text, language, profile_context)
+
     if not reply:
         return jsonify({"error": "OpenAI failed"}), 500
 
