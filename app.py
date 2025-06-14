@@ -364,39 +364,31 @@ def analyze_photo():
     if auth_result:
         return auth_result
 
-    data = request.get_json()
-    logger.info(f"📸 /photo-analyze request: {data.keys()}")
+    if 'image' not in request.files:
+        return jsonify({"error": "No image uploaded"}), 400
 
-    image_base64 = data.get("image_base64")
-    profile = data.get("profile", {}) # Pass profile for photo analysis too
-    
-    if not image_base64:
-        return jsonify({"error": "Missing image"}), 400
+    image_file = request.files['image']
+    profile_json = request.form.get('profile', '{}')
+    try:
+        profile = json.loads(profile_json)
+    except Exception:
+        profile = {}
 
+    image_base64 = base64.b64encode(image_file.read()).decode('utf-8')
     labels = get_image_labels(image_base64)
-    logger.info(f"🧠 Labels from Vision API: {labels}")
+    profile_context = json.dumps(profile)  # Minimal formatting
 
-    profile_context = build_profile_context(profile) # Build profile context for AI
-    
-    # Updated prompt for photo analysis to be more descriptive and use profile
-    prompt_for_photo = f"""
-    Analyze the following image labels in a medical context, considering the user's profile.
-    Image labels: {', '.join(labels)}.
-    User Profile: {profile_context}
-    
-    Based on these labels and profile, provide a medical analysis, possible detected condition, remedies, urgency, and suggested doctor, in the same detailed JSON format as the /analyze endpoint.
-    Crucially, start with the standard AI disclaimer.
-    """
-    
-    reply = generate_openai_response(prompt_for_photo, "English", profile_context) # Reusing general response generator
+    ai_reply = generate_openai_response(labels, profile_context)
+    if not ai_reply:
+        return jsonify({"error": "AI analysis failed"}), 500
 
-    if not reply:
-        return jsonify({"error": "OpenAI failed"}), 500
+    try:
+        parsed = json.loads(ai_reply)
+    except Exception:
+        parsed = {"medical_analysis": ai_reply, "error": "Could not parse JSON, raw text returned"}
 
-    parsed = parse_openai_json(reply)
-    parsed["image_labels"] = labels # Keep original labels for context
+    parsed["image_labels"] = labels
     return jsonify(parsed)
-
 
 @app.route("/analyze-lab-report", methods=["POST"])
 def analyze_lab_report():
