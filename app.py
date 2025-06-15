@@ -364,41 +364,20 @@ def analyze_photo():
     if auth_result:
         return auth_result
 
-    if 'image' not in request.files:
-        return jsonify({"error": "No image uploaded"}), 400
+    data = request.get_json()
+    image_base64 = data.get("image_base64")
+    profile = data.get("profile", {})
 
-    image_file = request.files['image']
-    profile_json = request.form.get('profile', '{}')
+    if not image_base64:
+        return jsonify({"error": "No image provided"}), 400
 
-    try:
-        profile = json.loads(profile_json)
-    except Exception:
-        profile = {}
-
-    profile_context = build_profile_context(profile)
-    image_base64 = base64.b64encode(image_file.read()).decode('utf-8')
-
-    # Get Google Vision labels from photo
     labels = get_image_labels(image_base64)
-    symptoms = ", ".join(labels)
+    profile_context = build_profile_context(profile)
+    ai_reply = generate_openai_response(labels, "English", profile_context)
 
-    if not symptoms:
-        return jsonify({"error": "No labels detected in image"}), 400
-
-    logger.info(f"[PHOTO-ANALYZE] Labels: {symptoms}")
-
-    # Use the labels as pseudo-symptoms for AI response
-    ai_reply = generate_openai_response(symptoms, "English", profile_context)
-
-    if not ai_reply:
-        return jsonify({"error": "AI analysis failed"}), 500
-
-    # Parse and sanitize OpenAI's JSON response
     parsed = parse_openai_json(ai_reply)
     parsed["image_labels"] = labels
-
     return jsonify(parsed)
-
 
 @app.route("/analyze-lab-report", methods=["POST"])
 def analyze_lab_report():
