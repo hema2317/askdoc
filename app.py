@@ -369,26 +369,36 @@ def analyze_photo():
 
     image_file = request.files['image']
     profile_json = request.form.get('profile', '{}')
+
     try:
         profile = json.loads(profile_json)
     except Exception:
         profile = {}
 
+    profile_context = build_profile_context(profile)
     image_base64 = base64.b64encode(image_file.read()).decode('utf-8')
-    labels = get_image_labels(image_base64)
-    profile_context = json.dumps(profile)  # Minimal formatting
 
-    ai_reply = generate_openai_response(labels, profile_context)
+    # Get Google Vision labels from photo
+    labels = get_image_labels(image_base64)
+    symptoms = ", ".join(labels)
+
+    if not symptoms:
+        return jsonify({"error": "No labels detected in image"}), 400
+
+    logger.info(f"[PHOTO-ANALYZE] Labels: {symptoms}")
+
+    # Use the labels as pseudo-symptoms for AI response
+    ai_reply = generate_openai_response(symptoms, "English", profile_context)
+
     if not ai_reply:
         return jsonify({"error": "AI analysis failed"}), 500
 
-    try:
-        parsed = json.loads(ai_reply)
-    except Exception:
-        parsed = {"medical_analysis": ai_reply, "error": "Could not parse JSON, raw text returned"}
-
+    # Parse and sanitize OpenAI's JSON response
+    parsed = parse_openai_json(ai_reply)
     parsed["image_labels"] = labels
+
     return jsonify(parsed)
+
 
 @app.route("/analyze-lab-report", methods=["POST"])
 def analyze_lab_report():
