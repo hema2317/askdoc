@@ -16,18 +16,22 @@ CORS(app, resources={r"/*": {"origins": "*"}})
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+# --- Environment Variables ---
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 DATABASE_URL = os.getenv("DATABASE_URL")
 GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")
 GOOGLE_VISION_API_KEY = os.getenv("GOOGLE_VISION_API_KEY")
-API_AUTH_TOKEN = os.getenv("API_AUTH_TOKEN")
+API_AUTH_TOKEN = os.getenv("API_AUTH_TOKEN") # The secret token expected from frontend
 
 openai.api_key = OPENAI_API_KEY
 
+# --- Authentication Middleware ---
 def check_api_token():
-    auth = request.headers.get("Authorization")
-    if not auth or auth != f"Bearer {API_AUTH_TOKEN}":
+    auth_header = request.headers.get("Authorization")
+    if not auth_header or auth_header != f"Bearer {API_AUTH_TOKEN}":
+        logger.warning(f"Unauthorized access attempt: Header={auth_header}, Expected={API_AUTH_TOKEN}")
         return jsonify({"error": "Unauthorized"}), 401
+    return None # Return None if authorized
 
 def get_db_connection():
     try:
@@ -39,6 +43,7 @@ def get_db_connection():
 def build_profile_context(profile_json):
     """Builds a human-readable context string from the user's profile data."""
     try:
+        # Ensure profile_json is treated as a dict if it comes as a string JSON
         profile = json.loads(profile_json) if isinstance(profile_json, str) else profile_json
     except Exception:
         logger.warning("Could not parse profile_json. Returning empty context.")
@@ -49,56 +54,67 @@ def build_profile_context(profile_json):
     if name := profile.get("name"):
         lines.append(f"Name: {name}")
     if age := profile.get("age"):
-        lines.append(f"Age: {age} years") # Added unit
+        lines.append(f"Age: {age} years")
     if gender := profile.get("gender"):
         lines.append(f"Gender: {gender}")
     if state := profile.get("state"):
         lines.append(f"State of Residence: {state}")
 
-    lines.append("\n--- Health Details ---") # Separator for clarity
+    lines.append("\n--- Health Details ---")
     if blood := profile.get("blood_type"):
         lines.append(f"Blood Type: {blood}")
-    if medical_conditions := profile.get("medical_conditions"): # Use medical_conditions
-        lines.append("Known Medical Conditions: " + ", ".join(medical_conditions))
-    if current_medications := profile.get("medications"): # Use medications
-        lines.append("Current Medications: " + ", ".join(current_medications))
-    if family_history := profile.get("family_history"): # Use family_history
-        lines.append("Family History of: " + ", ".join(family_history))
-    if known_diseases := profile.get("known_diseases"): # Use known_diseases
-        lines.append("Other Known Diseases: " + ", ".join(known_diseases))
+    if medical_conditions := profile.get("medical_conditions"):
+        # Ensure it's a list for join
+        if isinstance(medical_conditions, list):
+            lines.append("Known Medical Conditions: " + ", ".join(medical_conditions))
+        elif isinstance(medical_conditions, str): # Handle if AI returns string accidentally
+             lines.append("Known Medical Conditions: " + medical_conditions)
+    if current_medications := profile.get("medications"):
+        if isinstance(current_medications, list):
+            lines.append("Current Medications: " + ", ".join(current_medications))
+        elif isinstance(current_medications, str):
+            lines.append("Current Medications: " + current_medications)
+    if family_history := profile.get("family_history"):
+        if isinstance(family_history, list):
+            lines.append("Family History of: " + ", ".join(family_history))
+        elif isinstance(family_history, str):
+            lines.append("Family History of: " + family_history)
+    if known_diseases := profile.get("known_diseases"):
+        if isinstance(known_diseases, list):
+            lines.append("Other Known Diseases: " + ", ".join(known_diseases))
+        elif isinstance(known_diseases, str):
+            lines.append("Other Known Diseases: " + known_diseases)
 
-    lines.append("\n--- Lifestyle Details ---") # Separator for clarity
+    lines.append("\n--- Lifestyle Details ---")
     if smoker := profile.get("smoker"):
         lines.append(f"Smoker: {smoker}")
     if drinker := profile.get("drinker"):
         lines.append(f"Drinker: {drinker}")
     if exercise_habits := profile.get("exercise_habits"): # Use exercise_habits
-        lines.append("Exercise Habits: " + ", ".join(exercise_habits))
+        if isinstance(exercise_habits, list):
+            lines.append("Exercise Habits: " + ", ".join(exercise_habits))
+        elif isinstance(exercise_habits, str):
+            lines.append("Exercise Habits: " + exercise_habits)
 
     if not lines:
         return "No specific health profile provided by the user."
     
     return "\n".join(lines)
 
-
-# Removed calculate_age as age is now passed directly from frontend profile
-
-def generate_openai_response(symptoms, language, profile_context): # Renamed profile to profile_context
+def generate_openai_response(user_input_text, language, profile_context, prompt_type="symptoms"):
     """
-    Generates a detailed, nurse-like response from OpenAI based on symptoms and profile.
-    This prompt is significantly expanded to elicit more detailed and personalized advice.
+    Generates a detailed, nurse-like response from OpenAI based on input and profile.
+    Adapted for different prompt types (symptoms, photo, lab report).
     """
     
-    # Define normal ranges for common metrics the AI might encounter in symptoms
-    # This helps the AI interpret numbers correctly, especially blood sugar.
     health_metric_context = """
-    Normal Ranges for reference (use only if explicitly mentioned in symptoms, otherwise ignore):
+    Normal Ranges for reference (use only if explicitly mentioned, otherwise ignore):
     - Blood Sugar (Fasting): 70-100 mg/dL (or 3.9-5.6 mmol/L). Below 70 mg/dL is Hypoglycemia (low). Above 125 mg/dL is Hyperglycemia (high).
     - Blood Pressure: Systolic < 120 mmHg, Diastolic < 80 mmHg.
     - Temperature: Oral ~98.6°F (37°C). Fever generally >100.4°F (38°C).
     """
 
-    prompt = f"""
+    base_prompt = f"""
     You are a highly knowledgeable, empathetic, and responsible virtual health assistant. Your role is to act as a compassionate nurse or health educator.
     You must *always* provide information that is easy to understand for a layperson.
     Your initial greeting must *always* be a disclaimer.
@@ -110,18 +126,16 @@ def generate_openai_response(symptoms, language, profile_context): # Renamed pro
     --- User's Health Profile ---
     {profile_context}
 
-    --- User's Current Symptoms ---
-    Symptoms: "{symptoms}"
-
     --- Task Instructions ---
-    Based on the provided symptoms and the user's health profile, provide a structured and detailed analysis.
+    Based on the provided information and the user's health profile, provide a structured and detailed analysis.
     Ensure the language is simple, supportive, and actionable, like a compassionate nurse explaining things.
     **Crucially, explicitly use and reference information from the user's health profile to personalize the analysis, advice, and tips.** For example, if they have diabetes and report low sugar, tailor the advice by explicitly mentioning their diabetes. If they smoke, weave in advice related to smoking cessation for their condition.
+    Be very careful with numerical values for health metrics (like blood sugar); explicitly state if a number indicates "low," "normal," or "high" and specify units if implied.
 
     Generate your response as a JSON object with the following keys. All explanations should be concise but informative, aiming for clarity and actionability for a layperson. If a field is not applicable or information is insufficient, you can state "Not applicable" or "Insufficient information.":
 
     1.  `detected_condition`: A concise, most likely medical condition (e.g., 'Hypoglycemia', 'Common Cold', 'Muscle Strain').
-    2.  `medical_analysis`: A comprehensive overview of the symptoms and the detected condition. Explain it in simple, layman's terms. **Directly relate it to the user's profile where relevant.**
+    2.  `medical_analysis`: A comprehensive overview of the condition and symptoms. Explain it in simple, layman's terms. **Directly relate it to the user's profile where relevant.**
     3.  `why_happening_explanation`: Explain *why* the condition might be happening in simple, understandable terms. Consider profile factors like medications, habits, or pre-existing conditions.
     4.  `immediate_action`: What the person should *do immediately* or in the very short term. Be specific, actionable, and prioritize safety.
     5.  `nurse_tips`: **Proactive education and practical advice, like a nurse would provide.** This is where you significantly personalize guidance based on their profile. Include prevention, monitoring, or lifestyle advice tailored to their known conditions, habits (smoking, drinking, exercise), or family history.
@@ -129,30 +143,46 @@ def generate_openai_response(symptoms, language, profile_context): # Renamed pro
     7.  `medicines`: Common over-the-counter or general types of prescribed medications *related to the condition*. **Explicitly state this is NOT a prescription and they must consult a doctor.**
     8.  `urgency`: Categorize the urgency (e.g., 'Immediate Emergency', 'Urgent Consult', 'Moderate', 'Low').
     9.  `suggested_doctor`: The type of medical specialist they might need to see.
-    10. `hipaa_disclaimer`: The exact disclaimer text: "I am a virtual AI assistant and not a medical doctor. This information is for educational purposes only and is not a substitute for professional medical advice. Always consult a qualified healthcare provider for diagnosis and treatment."
+    10. `hipaa_disclaimer`: The exact disclaimer text: "Disclaimer: I am a virtual AI assistant and not a medical doctor. This information is for educational purposes only and is not a substitute for professional medical advice. Always consult a qualified healthcare provider for diagnosis and treatment."
     """
+
+    if prompt_type == "symptoms":
+        user_content = f"Symptoms: \"{user_input_text}\""
+    elif prompt_type == "photo_analysis":
+        user_content = f"Image shows: \"{user_input_text}\"" # user_input_text will be image labels/description
+    elif prompt_type == "lab_report":
+        user_content = f"Lab Report Text: \"{user_input_text}\"" # user_input_text will be extracted lab report text
+    else:
+        user_content = f"Input: \"{user_input_text}\""
+
+    full_prompt = base_prompt + f"\n--- User's Input ---\n{user_content}"
     
     try:
         response = openai.ChatCompletion.create(
-            model="gpt-3.5-turbo", # Consider "gpt-4" or "gpt-4o" for better reasoning and JSON formatting
+            model="gpt-3.5-turbo", # Use a capable model; gpt-4/gpt-4o are better for complex JSON/reasoning
             messages=[
-                {"role": "system", "content": "You are a helpful multilingual health assistant."},
-                {"role": "user", "content": prompt}
+                {"role": "system", "content": "You are a helpful multilingual health assistant. Adhere strictly to the requested JSON format."},
+                {"role": "user", "content": full_prompt}
             ],
             temperature=0.4, # Keep temperature low for factual consistency
-            # max_tokens=1000 # Consider setting a max_tokens if responses are too long
+            response_format={"type": "json_object"} # Explicitly request JSON object (for newer OpenAI versions)
         )
         return response['choices'][0]['message']['content']
+    except openai.error.OpenAIError as e:
+        logger.error(f"OpenAI API error: {e}")
+        return None
     except Exception as e:
-        logger.error(f"OpenAI request failed: {e}")
+        logger.error(f"Error in generate_openai_response: {e}")
         return None
 
 def parse_openai_json(reply):
     """
     Parses the JSON string from OpenAI's reply.
     It's robust to cases where the reply might contain extra text outside the JSON block.
+    Ensures 'remedies' and 'medicines' are always lists.
     """
     try:
+        # Try to find a ```json``` block first
         match = re.search(r'```json\s*(\{.*?\})\s*```', reply, re.DOTALL)
         if match:
             json_str = match.group(1)
@@ -161,63 +191,63 @@ def parse_openai_json(reply):
             json_str = reply
         
         parsed_data = json.loads(json_str)
+
+        # Ensure 'remedies' and 'medicines' are lists, even if AI returns strings or null
+        parsed_data['remedies'] = parsed_data.get('remedies')
+        if not isinstance(parsed_data['remedies'], list):
+            parsed_data['remedies'] = [parsed_data['remedies']] if parsed_data['remedies'] else []
+        
+        parsed_data['medicines'] = parsed_data.get('medicines')
+        if not isinstance(parsed_data['medicines'], list):
+            parsed_data['medicines'] = [parsed_data['medicines']] if parsed_data['medicines'] else []
+
         return parsed_data
     except json.JSONDecodeError as e:
         logger.error(f"JSON parsing failed: {e}. Raw reply: {reply}")
         # Return a fallback structure to prevent frontend crash
         return {
-            "medical_analysis": "I'm sorry, I couldn't fully process the request. Please try again or rephrase your symptoms.",
+            "medical_analysis": "I'm sorry, I couldn't fully process the request. Please try again or rephrase your symptoms. (JSON Parse Error)",
             "root_cause": "Parsing error or unclear AI response.",
-            "remedies": [],
-            "urgency": "unknown",
-            "suggested_doctor": "general",
-            "medicines": [],
-            "detected_condition": "unsure",
-            "why_happening_explanation": "Insufficient information.",
-            "immediate_action": "Consult a healthcare professional.",
+            "remedies": [], "medicines": [], "detected_condition": "unsure",
+            "why_happening_explanation": "Insufficient information.", "immediate_action": "Consult a healthcare professional.",
             "nurse_tips": "It's important to provide clear and concise information for accurate analysis. Always seek medical advice from a qualified doctor.",
-            "hipaa_disclaimer": "Disclaimer: I am a virtual AI assistant and not a medical doctor. This information is for educational purposes only and is not a substitute for professional medical advice. Always consult a qualified healthcare provider for diagnosis and treatment."
+            "hipaa_disclaimer": "Disclaimer: I am a virtual AI assistant and not a medical doctor. This information is for educational purposes only and is not a substitute for professional medical advice. Always consult a qualified healthcare provider for diagnosis and treatment.",
+            "urgency": "unknown", "suggested_doctor": "general"
         }
     except Exception as e:
         logger.error(f"Unexpected error in JSON parsing: {e}")
         return {
-            "medical_analysis": "An unexpected error occurred during analysis. Please try again.",
+            "medical_analysis": "An unexpected error occurred during analysis. Please try again. (Unknown Error)",
             "root_cause": "Unknown error.",
-            "remedies": [],
-            "urgency": "unknown",
-            "suggested_doctor": "general",
-            "medicines": [],
-            "detected_condition": "unsure",
-            "why_happening_explanation": "An internal error occurred.",
-            "immediate_action": "Consult a healthcare professional.",
+            "remedies": [], "medicines": [], "detected_condition": "unsure",
+            "why_happening_explanation": "An internal error occurred.", "immediate_action": "Consult a healthcare professional.",
             "nurse_tips": "If issues persist, please contact support. Always seek medical advice from a qualified doctor.",
-            "hipaa_disclaimer": "Disclaimer: I am a virtual AI assistant and not a medical doctor. This information is for educational purposes only and is not a substitute for professional medical advice. Always consult a qualified healthcare provider for diagnosis and treatment."
+            "hipaa_disclaimer": "Disclaimer: I am a virtual AI assistant and not a medical doctor. This information is for educational purposes only and is not a substitute for professional medical advice. Always consult a qualified healthcare provider for diagnosis and treatment.",
+            "urgency": "unknown", "suggested_doctor": "general"
         }
 
 
 def get_nearby_doctors(specialty, location):
     """Fetches nearby doctors using Google Places API."""
     if not GOOGLE_API_KEY:
-        logger.error("GOOGLE_API_KEY is not set.")
+        logger.error("GOOGLE_API_KEY is not set for Places API.")
         return []
     
     try:
         lat, lng = location.split(",")
         url = "https://maps.googleapis.com/maps/api/place/nearbysearch/json"
         params = {
-            "keyword": f"{specialty} doctor", # Added 'doctor' to keyword for better results
+            "keyword": f"{specialty} doctor",
             "location": f"{lat},{lng}",
-            "radius": 10000, # Increased radius to 10km for more results
-            "type": "doctor", # Explicitly request type doctor
+            "radius": 10000, # 10km
+            "type": "doctor",
             "key": GOOGLE_API_KEY,
-            "rankby": "prominence" # Sort by prominence (default)
+            "rankby": "prominence"
         }
         response = requests.get(url, params=params)
-        response.raise_for_status() # Raise an HTTPError for bad responses (4xx or 5xx)
+        response.raise_for_status()
         
         results = response.json().get("results", [])
-        
-        # Filter for only those with ratings and sort by rating, then by open_now
         filtered_results = [p for p in results if p.get("rating") is not None]
         sorted_results = sorted(
             filtered_results, 
@@ -226,13 +256,13 @@ def get_nearby_doctors(specialty, location):
         )
 
         doctors = []
-        for place in sorted_results[:5]: # Limit to top 5
+        for place in sorted_results[:5]:
             doctors.append({
                 "name": place.get("name"),
                 "address": place.get("vicinity"),
                 "rating": place.get("rating"),
                 "open_now": place.get("opening_hours", {}).get("open_now", False),
-                "maps_link": f"https://www.google.com/maps/search/?api=1&query={place.get('name')},{place.get('vicinity')}&query_place_id={place.get('place_id')}" # More robust Maps link
+                "maps_link": f"https://www.google.com/maps/search/?api=1&query={place.get('name')},{place.get('vicinity')}&query_place_id={place.get('place_id')}"
             })
         return doctors
     except requests.exceptions.RequestException as e:
@@ -245,7 +275,7 @@ def get_nearby_doctors(specialty, location):
 def get_image_labels(base64_image):
     """Uses Google Vision API to get labels from an image."""
     if not GOOGLE_VISION_API_KEY:
-        logger.error("GOOGLE_VISION_API_KEY is not set.")
+        logger.error("GOOGLE_VISION_API_KEY is not set for Vision API.")
         return []
         
     try:
@@ -253,7 +283,7 @@ def get_image_labels(base64_image):
         body = {
             "requests": [{
                 "image": {"content": base64_image},
-                "features": [{"type": "LABEL_DETECTION", "maxResults": 5}]
+                "features": [{"type": "LABEL_DETECTION", "maxResults": 10}] # Increased maxResults
             }]
         }
         res = requests.post(url, json=body)
@@ -270,7 +300,7 @@ def get_image_labels(base64_image):
 def get_image_text(base64_image):
     """Uses Google Vision API to perform OCR (Text Detection) on an image."""
     if not GOOGLE_VISION_API_KEY:
-        logger.error("GOOGLE_VISION_API_KEY is not set.")
+        logger.error("GOOGLE_VISION_API_KEY is not set for Vision API.")
         return ""
 
     try:
@@ -307,17 +337,17 @@ def analyze():
     data = request.json
     symptoms = data.get("symptoms", "")
     language = data.get("language", "English")
-    profile = data.get("profile", {}) # Expecting dict, not empty string
+    profile_data = data.get("profile", {}) # Expecting dict, not empty string
     location = data.get("location", "")
 
     if not symptoms:
         return jsonify({"error": "No symptoms provided"}), 400
 
     logger.info(f"[ANALYZE] Input: {symptoms}")
-    profile_context = build_profile_context(profile) # Build context string
+    profile_context = build_profile_context(profile_data) # Build context string
     
     # Generate response from OpenAI using the detailed prompt
-    reply_content = generate_openai_response(symptoms, language, profile_context)
+    reply_content = generate_openai_response(symptoms, language, profile_context, prompt_type="symptoms")
 
     if not reply_content:
         return jsonify({"error": "OpenAI failed to generate response"}), 500
@@ -354,9 +384,12 @@ def ask():
         )
         reply = response["choices"][0]["message"]["content"]
         return jsonify({ "reply": reply })
-    except Exception as e:
-        logger.error(f"OpenAI Error in /ask: {e}")
+    except openai.error.OpenAIError as e:
+        logger.error(f"OpenAI API error in /ask: {e}")
         return jsonify({ "error": "OpenAI request failed" }), 500
+    except Exception as e:
+        logger.error(f"Error in /ask: {e}")
+        return jsonify({ "error": "An unexpected error occurred" }), 500
 
 @app.route("/photo-analyze", methods=["POST"])
 def analyze_photo():
@@ -366,18 +399,43 @@ def analyze_photo():
 
     data = request.get_json()
     image_base64 = data.get("image_base64")
-    profile = data.get("profile", {})
-
+    profile_data = data.get("profile", {}) # Pass profile for photo analysis
+    location_data = data.get("location", "")
+    
     if not image_base64:
         return jsonify({"error": "No image provided"}), 400
 
-    labels = get_image_labels(image_base64)
-    profile_context = build_profile_context(profile)
-    ai_reply = generate_openai_response(labels, "English", profile_context)
+    logger.info("📸 /photo-analyze: Analyzing image for labels and text")
 
-    parsed = parse_openai_json(ai_reply)
-    parsed["image_labels"] = labels
-    return jsonify(parsed)
+    # Step 1: Get labels and text from Google Vision API
+    labels = get_image_labels(image_base64) # This gets labels
+    detected_text = get_image_text(image_base64) # This gets text (OCR)
+
+    # Combine labels and text for LLM input
+    image_description_for_llm = f"The image provides visual cues: {', '.join(labels)}."
+    if detected_text:
+        image_description_for_llm += f" Additionally, text detected in the image: \"{detected_text}\""
+    
+    profile_context = build_profile_context(profile_data)
+
+    # Step 2: Send compiled description and profile to the main LLM for analysis
+    llm_reply_content = generate_openai_response(image_description_for_llm, "English", profile_context, prompt_type="photo_analysis")
+
+    if not llm_reply_content:
+        return jsonify({"error": "AI analysis failed to generate response."}), 500
+
+    parsed_analysis = parse_openai_json(llm_reply_content)
+
+    # Add nearby doctors if applicable
+    if location_data and parsed_analysis.get("suggested_doctor"):
+        parsed_analysis["nearby_doctors"] = get_nearby_doctors(parsed_analysis["suggested_doctor"], location_data)
+    else:
+        parsed_analysis["nearby_doctors"] = []
+    
+    parsed_analysis["image_labels"] = labels # For frontend to display original labels if needed
+    parsed_analysis["image_description"] = image_description_for_llm # For frontend to display AI's interpretation input
+
+    return jsonify(parsed_analysis)
 
 @app.route("/analyze-lab-report", methods=["POST"])
 def analyze_lab_report():
@@ -386,54 +444,46 @@ def analyze_lab_report():
         return auth_result
 
     data = request.get_json()
-    image_base64 = data.get("image_base64")
-    extracted_text = data.get("extracted_text", "")
+    image_base64 = data.get("image_base64") # For PDF OCR on backend
+    extracted_text_from_frontend = data.get("extracted_text", "") # Text OCR'd by frontend (for images)
     location = data.get("location", "")
-    profile = data.get("profile", {}) # Pass profile for lab report analysis too
+    profile_data = data.get("profile", {})
     language = data.get("language", "English")
 
-    if not extracted_text and not image_base64:
-        return jsonify({"error": "Missing lab report text or image"}), 400
+    final_text_for_ai = ""
 
-    # If text not provided, extract from image
-    if not extracted_text and image_base64:
-        logger.info("Performing OCR on lab report image...")
-        extracted_text = get_image_text(image_base64) # Use the more robust get_image_text
-        if not extracted_text:
-            return jsonify({"error": "OCR failed to extract text from image"}), 500
+    # Prioritize extracted_text from frontend if present (means frontend did OCR for image)
+    if extracted_text_from_frontend and extracted_text_from_frontend != "PDF document uploaded. Extracting text on backend...":
+        final_text_for_ai = extracted_text_from_frontend
+        logger.info("🧪 Using frontend extracted text for lab report analysis.")
+    elif image_base64: # If no frontend text, but image_base64 (likely PDF) is present
+        logger.info("🧪 Performing OCR on backend for lab report image...")
+        extracted_text_from_backend = get_image_text(image_base64) # Backend OCR
+        if not extracted_text_from_backend:
+            return jsonify({"error": "OCR failed to extract text from backend for image"}), 500
+        final_text_for_ai = extracted_text_from_backend
+        # Add extracted_text to response for frontend preview
+        data['extracted_text'] = final_text_for_ai # This modifies 'data' dict before passing to jsonify
 
-    logger.info("🧪 /analyze-lab-report analyzing extracted lab report text")
-    profile_context = build_profile_context(profile) # Build profile context
+    if not final_text_for_ai:
+        return jsonify({"error": "Missing lab report text or image to analyze"}), 400
 
-    # Updated prompt for lab report analysis to be more descriptive and use profile
-    prompt_for_lab = f"""
-    Analyze the following lab report text for a patient with this profile:
-    Lab Report Text: "{extracted_text}"
-    User Profile: {profile_context}
-    
-    Based on this lab report and profile, provide a detailed medical analysis, highlight good/bad results with explanations, actionable advice, urgency, and suggested doctor, in the same detailed JSON format as the /analyze endpoint.
-    Crucially, start with the standard AI disclaimer.
-    """
+    profile_context = build_profile_context(profile_data)
+    reply_content = generate_openai_response(final_text_for_ai, language, profile_context, prompt_type="lab_report")
 
-    reply = generate_openai_response(prompt_for_lab, language, profile_context) # Reusing general response generator
+    if not reply_content:
+        return jsonify({"error": "AI failed to generate response for lab report"}), 500
 
-    if not reply:
-        return jsonify({"error": "OpenAI failed to generate response"}), 500
+    parsed_response = parse_openai_json(reply_content)
 
-    parsed = parse_openai_json(reply)
-
-    # For lab reports, you might need specific parsing for good_results and bad_results
-    # If your AI prompt can produce them in this format, collect them from parsed_response
-    # For now, let's assume LLM returns a more general medical_analysis for text.
-    # If LLM produces specific good/bad results, ensure parse_openai_json handles them.
-    parsed["extracted_text"] = extracted_text # Keep extracted text for context
-
-    if location and parsed.get("suggested_doctor"):
-        parsed["nearby_doctors"] = get_nearby_doctors(parsed["suggested_doctor"], location)
+    if location and parsed_response.get("suggested_doctor"):
+        parsed_response["nearby_doctors"] = get_nearby_doctors(parsed_response["suggested_doctor"], location)
     else:
-        parsed["nearby_doctors"] = []
+        parsed_response["nearby_doctors"] = []
 
-    return jsonify(parsed)
+    # Ensure extracted_text is part of the final response for frontend preview
+    parsed_response["extracted_text"] = final_text_for_ai 
+    return jsonify(parsed_response)
 
 
 if __name__ == '__main__':
