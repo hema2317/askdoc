@@ -22,8 +22,6 @@ DATABASE_URL = os.getenv("DATABASE_URL")
 GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")
 GOOGLE_VISION_API_KEY = os.getenv("GOOGLE_VISION_API_KEY")
 API_AUTH_TOKEN = os.getenv("API_AUTH_TOKEN") # The secret token expected from frontend
-SUPABASE_SERVICE_ROLE_KEY = os.getenv("SUPABASE_SERVICE_ROLE_KEY")
-SUPABASE_URL = os.getenv("SUPABASE_URL")
 
 openai.api_key = OPENAI_API_KEY
 
@@ -136,16 +134,16 @@ def generate_openai_response(user_input_text, language, profile_context, prompt_
 
     Generate your response as a JSON object with the following keys. All explanations should be concise but informative, aiming for clarity and actionability for a layperson. If a field is not applicable or information is insufficient, you can state "Not applicable" or "Insufficient information.":
 
-    1.  `detected_condition`: A concise, most likely medical condition (e.g., 'Hypoglycemia', 'Common Cold', 'Muscle Strain').
-    2.  `medical_analysis`: A comprehensive overview of the condition and symptoms. Explain it in simple, layman's terms. **Directly relate it to the user's profile where relevant.**
-    3.  `why_happening_explanation`: Explain *why* the condition might be happening in simple, understandable terms. Consider profile factors like medications, habits, or pre-existing conditions.
-    4.  `immediate_action`: What the person should *do immediately* or in the very short term. Be specific, actionable, and prioritize safety.
-    5.  `nurse_tips`: **Proactive education and practical advice, like a nurse would provide.** This is where you significantly personalize guidance based on their profile. Include prevention, monitoring, or lifestyle advice tailored to their known conditions, habits (smoking, drinking, exercise), or family history.
-    6.  `remedies`: General suggestions for self-care or lifestyle adjustments for recovery or management.
-    7.  `medicines`: Common over-the-counter or general types of prescribed medications *related to the condition*. **Explicitly state this is NOT a prescription and they must consult a doctor.**
-    8.  `urgency`: Categorize the urgency (e.g., 'Immediate Emergency', 'Urgent Consult', 'Moderate', 'Low').
-    9.  `suggested_doctor`: The type of medical specialist they might need to see.
-    10. `hipaa_disclaimer`: The exact disclaimer text: "Disclaimer: I am a virtual AI assistant and not a medical doctor. This information is for educational purposes only and is not a substitute for professional medical advice. Always consult a qualified healthcare provider for diagnosis and treatment."
+    1.  detected_condition: A concise, most likely medical condition (e.g., 'Hypoglycemia', 'Common Cold', 'Muscle Strain').
+    2.  medical_analysis: A comprehensive overview of the condition and symptoms. Explain it in simple, layman's terms. **Directly relate it to the user's profile where relevant.**
+    3.  why_happening_explanation: Explain *why* the condition might be happening in simple, understandable terms. Consider profile factors like medications, habits, or pre-existing conditions.
+    4.  immediate_action: What the person should *do immediately* or in the very short term. Be specific, actionable, and prioritize safety.
+    5.  nurse_tips: **Proactive education and practical advice, like a nurse would provide.** This is where you significantly personalize guidance based on their profile. Include prevention, monitoring, or lifestyle advice tailored to their known conditions, habits (smoking, drinking, exercise), or family history.
+    6.  remedies: General suggestions for self-care or lifestyle adjustments for recovery or management.
+    7.  medicines: Common over-the-counter or general types of prescribed medications *related to the condition*. **Explicitly state this is NOT a prescription and they must consult a doctor.**
+    8.  urgency: Categorize the urgency (e.g., 'Immediate Emergency', 'Urgent Consult', 'Moderate', 'Low').
+    9.  suggested_doctor: The type of medical specialist they might need to see.
+    10. hipaa_disclaimer: The exact disclaimer text: "Disclaimer: I am a virtual AI assistant and not a medical doctor. This information is for educational purposes only and is not a substitute for professional medical advice. Always consult a qualified healthcare provider for diagnosis and treatment."
     """
 
     if prompt_type == "symptoms":
@@ -184,12 +182,18 @@ def parse_openai_json(reply):
     Ensures 'remedies' and 'medicines' are always lists.
     """
     try:
-        # Try to find a ```json``` block first
-        match = re.search(r'```json\s*(\{.*?\})\s*```', reply, re.DOTALL)
+        # Try to find a 
+json
+ block first
+        match = re.search(r'
+json\s*(\{.*?\})\s*
+', reply, re.DOTALL)
         if match:
             json_str = match.group(1)
         else:
-            # If no ```json``` block, try to parse the whole reply as JSON
+            # If no 
+json
+ block, try to parse the whole reply as JSON
             json_str = reply
         
         parsed_data = json.loads(json_str)
@@ -486,42 +490,9 @@ def analyze_lab_report():
     # Ensure extracted_text is part of the final response for frontend preview
     parsed_response["extracted_text"] = final_text_for_ai 
     return jsonify(parsed_response)
-@app.route("/api/reset-password", methods=["POST"])
-def reset_password():
-    auth_result = check_api_token()
-    if auth_result:
-        return auth_result
 
-    data = request.json
-    email = data.get('email')
-    new_password = data.get('new_password')
-
-    if not email or not new_password:
-        return jsonify({"error": "Missing email or new password"}), 400
-
-    if not SUPABASE_SERVICE_ROLE_KEY or not SUPABASE_URL:
-        return jsonify({"error": "Supabase credentials not configured"}), 500
-
-    headers = {
-        'apikey': SUPABASE_SERVICE_ROLE_KEY,
-        'Authorization': f'Bearer {SUPABASE_SERVICE_ROLE_KEY}',
-        'Content-Type': 'application/json'
-    }
-
-    try:
-        response = requests.patch(
-            f"{SUPABASE_URL}/auth/v1/admin/users/by-email/{email}",
-            headers=headers,
-            json={"password": new_password}
-        )
-        if response.status_code == 200:
-            return jsonify({"success": True})
-        else:
-            return jsonify({"error": response.json()}), 400
-    except Exception as e:
-        logger.error(f"Reset password error: {e}")
-        return jsonify({"error": "Server error during password reset"}), 500
 
 if __name__ == '__main__':
     port = int(os.environ.get("PORT", 10000))  
     app.run(host='0.0.0.0', port=port)
+add complete fix for password and give complete code without out changing other things 
