@@ -22,6 +22,8 @@ DATABASE_URL = os.getenv("DATABASE_URL")
 GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")
 GOOGLE_VISION_API_KEY = os.getenv("GOOGLE_VISION_API_KEY")
 API_AUTH_TOKEN = os.getenv("API_AUTH_TOKEN") # The secret token expected from frontend
+SUPABASE_SERVICE_ROLE_KEY = os.getenv("SUPABASE_SERVICE_ROLE_KEY")
+SUPABASE_URL = os.getenv("SUPABASE_URL")
 
 openai.api_key = OPENAI_API_KEY
 
@@ -484,7 +486,41 @@ def analyze_lab_report():
     # Ensure extracted_text is part of the final response for frontend preview
     parsed_response["extracted_text"] = final_text_for_ai 
     return jsonify(parsed_response)
+@app.route("/api/reset-password", methods=["POST"])
+def reset_password():
+    auth_result = check_api_token()
+    if auth_result:
+        return auth_result
 
+    data = request.json
+    email = data.get('email')
+    new_password = data.get('new_password')
+
+    if not email or not new_password:
+        return jsonify({"error": "Missing email or new password"}), 400
+
+    if not SUPABASE_SERVICE_ROLE_KEY or not SUPABASE_URL:
+        return jsonify({"error": "Supabase credentials not configured"}), 500
+
+    headers = {
+        'apikey': SUPABASE_SERVICE_ROLE_KEY,
+        'Authorization': f'Bearer {SUPABASE_SERVICE_ROLE_KEY}',
+        'Content-Type': 'application/json'
+    }
+
+    try:
+        response = requests.patch(
+            f"{SUPABASE_URL}/auth/v1/admin/users/by-email/{email}",
+            headers=headers,
+            json={"password": new_password}
+        )
+        if response.status_code == 200:
+            return jsonify({"success": True})
+        else:
+            return jsonify({"error": response.json()}), 400
+    except Exception as e:
+        logger.error(f"Reset password error: {e}")
+        return jsonify({"error": "Server error during password reset"}), 500
 
 if __name__ == '__main__':
     port = int(os.environ.get("PORT", 10000))  
