@@ -178,55 +178,42 @@ def generate_openai_response(user_input_text, language, profile_context, prompt_
 def parse_openai_json(reply):
     """
     Parses the JSON string from OpenAI's reply.
-    It's robust to cases where the reply might contain extra text outside the JSON block.
     Ensures 'remedies' and 'medicines' are always lists.
     """
     try:
- # Try to find a ```json { ... } ``` block first
-        match = re.search(r'```json\s*(\{.*?\})\s*```', reply, re.DOTALL)
+        match = re.search(r'\{.*\}', reply, re.DOTALL)
         if match:
-            json_str = match.group(1)
+            json_str = match.group(0)
         else:
-            # Fall back to finding the first JSON-like block
-            match = re.search(r'(\{.*?\})', reply, re.DOTALL)
-            if not match:
-                raise ValueError("No JSON object found in reply.")
-            json_str = match.group(1)
+            json_str = reply.strip()
 
-        data = json.loads(json_str)
+        parsed_data = json.loads(json_str)
 
-        # Ensure 'remedies' and 'medicines' are lists, even if AI returns strings or null
-        parsed_data['remedies'] = parsed_data.get('remedies')
+        # Ensure remedies and medicines are lists
+        parsed_data['remedies'] = parsed_data.get('remedies') or []
         if not isinstance(parsed_data['remedies'], list):
-            parsed_data['remedies'] = [parsed_data['remedies']] if parsed_data['remedies'] else []
-        
-        parsed_data['medicines'] = parsed_data.get('medicines')
+            parsed_data['remedies'] = [parsed_data['remedies']]
+
+        parsed_data['medicines'] = parsed_data.get('medicines') or []
         if not isinstance(parsed_data['medicines'], list):
-            parsed_data['medicines'] = [parsed_data['medicines']] if parsed_data['medicines'] else []
+            parsed_data['medicines'] = [parsed_data['medicines']]
 
         return parsed_data
-    except json.JSONDecodeError as e:
-        logger.error(f"JSON parsing failed: {e}. Raw reply: {reply}")
-        # Return a fallback structure to prevent frontend crash
-        return {
-            "medical_analysis": "I'm sorry, I couldn't fully process the request. Please try again or rephrase your symptoms. (JSON Parse Error)",
-            "root_cause": "Parsing error or unclear AI response.",
-            "remedies": [], "medicines": [], "detected_condition": "unsure",
-            "why_happening_explanation": "Insufficient information.", "immediate_action": "Consult a healthcare professional.",
-            "nurse_tips": "It's important to provide clear and concise information for accurate analysis. Always seek medical advice from a qualified doctor.",
-            "hipaa_disclaimer": "Disclaimer: I am a virtual AI assistant and not a medical doctor. This information is for educational purposes only and is not a substitute for professional medical advice. Always consult a qualified healthcare provider for diagnosis and treatment.",
-            "urgency": "unknown", "suggested_doctor": "general"
-        }
+
     except Exception as e:
-        logger.error(f"Unexpected error in JSON parsing: {e}")
+        logger.error(f"JSON parsing failed: {e}. Raw reply: {reply}")
         return {
-            "medical_analysis": "An unexpected error occurred during analysis. Please try again. (Unknown Error)",
-            "root_cause": "Unknown error.",
-            "remedies": [], "medicines": [], "detected_condition": "unsure",
-            "why_happening_explanation": "An internal error occurred.", "immediate_action": "Consult a healthcare professional.",
-            "nurse_tips": "If issues persist, please contact support. Always seek medical advice from a qualified doctor.",
-            "hipaa_disclaimer": "Disclaimer: I am a virtual AI assistant and not a medical doctor. This information is for educational purposes only and is not a substitute for professional medical advice. Always consult a qualified healthcare provider for diagnosis and treatment.",
-            "urgency": "unknown", "suggested_doctor": "general"
+            "medical_analysis": "AI response failed to parse correctly.",
+            "root_cause": str(e),
+            "remedies": [],
+            "medicines": [],
+            "detected_condition": "unsure",
+            "why_happening_explanation": "Error parsing AI response.",
+            "immediate_action": "Try again or rephrase symptoms.",
+            "nurse_tips": "Always consult a real doctor.",
+            "hipaa_disclaimer": "Disclaimer: I am a virtual AI assistant...",
+            "urgency": "unknown",
+            "suggested_doctor": "general"
         }
 
 
