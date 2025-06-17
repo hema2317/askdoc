@@ -182,21 +182,18 @@ def parse_openai_json(reply):
     Ensures 'remedies' and 'medicines' are always lists.
     """
     try:
-        # Try to find a 
-json
- block first
-        match = re.search(r'
-json\s*(\{.*?\})\s*
-', reply, re.DOTALL)
+ # Try to find a ```json { ... } ``` block first
+        match = re.search(r'```json\s*(\{.*?\})\s*```', reply, re.DOTALL)
         if match:
             json_str = match.group(1)
         else:
-            # If no 
-json
- block, try to parse the whole reply as JSON
-            json_str = reply
-        
-        parsed_data = json.loads(json_str)
+            # Fall back to finding the first JSON-like block
+            match = re.search(r'(\{.*?\})', reply, re.DOTALL)
+            if not match:
+                raise ValueError("No JSON object found in reply.")
+            json_str = match.group(1)
+
+        data = json.loads(json_str)
 
         # Ensure 'remedies' and 'medicines' are lists, even if AI returns strings or null
         parsed_data['remedies'] = parsed_data.get('remedies')
