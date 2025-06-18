@@ -83,70 +83,67 @@ def get_nearby_doctors(specialty, location):
         return []
 @app.route("/analyze", methods=["POST"])
 def analyze_symptoms():
-    auth_error = check_api_token()
-    if auth_error:
-        return auth_error
+    token_error = check_api_token()
+    if token_error:
+        return token_error
 
     try:
-        data = request.get_json()
-        logger.info(f"[ANALYZE] Received: {json.dumps(data, indent=2)}")
-
+        data = request.json
+        symptoms = data.get("symptoms", "").strip()
         profile = data.get("profile", {})
-        symptoms = data.get("symptoms", "")
-        language = data.get("language", "English")
         location = data.get("location", {})
-
-        lat = location.get("lat")
-        lng = location.get("lng")
-
-        if not lat or not lng:
-            logger.warning("[ANALYZE] Missing location data")
-            return jsonify({"error": "Missing location (lat/lng)"}), 400
+        language = data.get("language", "English")
 
         if not symptoms:
             return jsonify({"error": "Missing symptoms"}), 400
 
-        # Build prompt context
+        # Construct profile context
         profile_context = build_profile_context(profile)
+        prompt = f"""You are a medical assistant. The patient's context is:\n{profile_context}\n\nThey reported the following symptoms:\n{symptoms}\n\nAnalyze this and respond with:\n- Possible medical condition\n- Suggested remedy\n- Urgency level\n- Doctor to see\nBe brief and medically sound."""
 
-        prompt = (
-            f"{profile_context}\n"
-            f"Patient reports: {symptoms}.\n"
-            f"Give a medical analysis in this structure:\n"
-            f"- Possible Cause:\n"
-            f"- Remedy:\n"
-            f"- Urgency Level (High/Medium/Low):\n"
-            f"- Suggested Doctor Specialty:\n"
-            f"- Is this an emergency?:\n"
-        )
+        logger.info("[ANALYZE] Sending prompt to OpenAI...")
 
-        logger.info(f"[OPENAI] Prompt: {prompt}")
-
-        response = openai.ChatCompletion.create(
+        openai_response = openai.ChatCompletion.create(
             model="gpt-4",
-            messages=[{"role": "user", "content": prompt}],
-            temperature=0.5
+            messages=[
+                {"role": "system", "content": "You are a helpful medical assistant."},
+                {"role": "user", "content": prompt}
+            ],
+            temperature=0.5,
+            max_tokens=400
         )
 
-        ai_reply = response["choices"][0]["message"]["content"]
-        logger.info(f"[OPENAI] Response: {ai_reply}")
+        reply = openai_response.choices[0].message.content.strip()
+        logger.info(f"[ANALYZE] AI replied:\n{reply}")
 
-        # Doctor specialty detection
-        match = re.search(r"Suggested Doctor Specialty:\s*(.+)", ai_reply)
-        specialty = match.group(1).strip() if match else "general"
+        # Extract summary
+        detected_condition = extract_condition(reply)
+        suggested_doctor = extract_doctor(reply)
+        remedy = extract_remedy(reply)
+        urgency = extract_urgency(reply)
 
-        nearby_doctors = get_nearby_doctors(specialty, f"{lat},{lng}")
-        logger.info(f"[DOCTORS] Found {len(nearby_doctors)} for specialty '{specialty}'")
+        nearby_doctors = []
+        if location and "lat" in location and "lng" in location:
+            lat = location["lat"]
+            lng = location["lng"]
+            doctor_type = suggested_doctor or "general"
+            logger.info(f"[ANALYZE] Fetching doctors for: {doctor_type} near {lat}, {lng}")
+            nearby_doctors = get_nearby_doctors(doctor_type, f"{lat},{lng}")
+        else:
+            logger.warning("[ANALYZE] Missing location data")
 
         return jsonify({
-            "analysis": ai_reply,
-            "suggested_doctor": specialty,
-            "doctors": nearby_doctors
+            "detected_condition": detected_condition,
+            "suggested_doctor": suggested_doctor,
+            "remedy": remedy,
+            "urgency": urgency,
+            "medical_analysis": reply,
+            "nearby_doctors": nearby_doctors
         })
 
     except Exception as e:
-        logger.exception("Error in /analyze")
-        return jsonify({"error": "Internal Server Error", "details": str(e)}), 500
+        logger.exception("[ANALYZE] Failed to process")
+        return jsonify({"error": str(e)}), 500
 
 @app.route('/api/doctors')
 def doctors_endpoint():
