@@ -217,50 +217,19 @@ def parse_openai_json(reply):
         }
 
 
-def get_nearby_doctors(specialty, location):
-    """Fetches nearby doctors using Google Places API."""
-    if not GOOGLE_API_KEY:
-        logger.error("GOOGLE_API_KEY is not set for Places API.")
-        return []
-    
-    try:
-        lat, lng = location.split(",")
-        url = "https://maps.googleapis.com/maps/api/place/nearbysearch/json"
-        params = {
-            "keyword": f"{specialty} doctor",
-            "location": f"{lat},{lng}",
-            "radius": 10000, # 10km
-            "type": "doctor",
-            "key": GOOGLE_API_KEY,
-            "rankby": "prominence"
-        }
-        response = requests.get(url, params=params)
-        response.raise_for_status()
-        
-        results = response.json().get("results", [])
-        filtered_results = [p for p in results if p.get("rating") is not None]
-        sorted_results = sorted(
-            filtered_results, 
-            key=lambda x: (x.get("rating", 0), x.get("opening_hours", {}).get("open_now", False)), 
-            reverse=True
-        )
+@app.route('/api/doctors')
+def doctors_endpoint():
+    lat = request.args.get('lat')
+    lng = request.args.get('lng')
+    specialty = request.args.get('specialty', 'general')  # Optional
 
-        doctors = []
-        for place in sorted_results[:5]:
-            doctors.append({
-                "name": place.get("name"),
-                "address": place.get("vicinity"),
-                "rating": place.get("rating"),
-                "open_now": place.get("opening_hours", {}).get("open_now", False),
-                "maps_link": f"https://www.google.com/maps/search/?api=1&query={place.get('name')},{place.get('vicinity')}&query_place_id={place.get('place_id')}"
-            })
-        return doctors
-    except requests.exceptions.RequestException as e:
-        logger.error(f"Google Maps API request failed: {e}")
-        return []
-    except Exception as e:
-        logger.error(f"Error fetching nearby doctors: {e}")
-        return []
+    if not lat or not lng:
+        return jsonify({"error": "Missing lat/lng"}), 400
+
+    location = f"{lat},{lng}"
+    results = get_nearby_doctors(specialty, location)
+    return jsonify(results)
+
 
 def get_image_labels(base64_image):
     """Uses Google Vision API to get labels from an image."""
