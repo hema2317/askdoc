@@ -3,7 +3,7 @@ import json
 import logging
 import re
 from datetime import datetime
-from flask import Flask, request, jsonify
+from flask import Flask, request, jsonify, redirect, url_for
 from flask_cors import CORS
 import openai
 import requests
@@ -22,6 +22,14 @@ DATABASE_URL = os.getenv("DATABASE_URL")
 GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")
 GOOGLE_VISION_API_KEY = os.getenv("GOOGLE_VISION_API_KEY")
 API_AUTH_TOKEN = os.getenv("API_AUTH_TOKEN") # The secret token expected from frontend
+
+# Supabase Project URL and Anon Key (from your frontend code)
+# These are used if your backend initiates password reset via Supabase Auth API,
+# or if you use the backend to proxy other Supabase operations.
+# For password reset initiation, the Anon Key is sufficient.
+SUPABASE_URL = os.getenv("SUPABASE_URL", "https://askdocapp-92cc3.supabase.co")
+SUPABASE_ANON_KEY = os.getenv("SUPABASE_ANON_KEY", "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im5sZnZ3YmpwZXl3Y2Vzc3F5cWFjIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NDU4NTczNjQsImV4cCI6MjA2MTQzMzM2NH0.zL84P7bK7qHxJt8MtkTPkqNe4U_K512ZgtpPvD9PoRI")
+
 
 openai.api_key = OPENAI_API_KEY
 
@@ -61,14 +69,12 @@ def build_profile_context(profile_json):
         lines.append(f"State of Residence: {state}")
 
     lines.append("\n--- Health Details ---")
-    if blood := profile.get("blood_type"):
-        lines.append(f"Blood Type: {blood}")
     if medical_conditions := profile.get("medical_conditions"):
         # Ensure it's a list for join
         if isinstance(medical_conditions, list):
             lines.append("Known Medical Conditions: " + ", ".join(medical_conditions))
         elif isinstance(medical_conditions, str): # Handle if AI returns string accidentally
-             lines.append("Known Medical Conditions: " + medical_conditions)
+            lines.append("Known Medical Conditions: " + medical_conditions)
     if current_medications := profile.get("medications"):
         if isinstance(current_medications, list):
             lines.append("Current Medications: " + ", ".join(current_medications))
@@ -143,7 +149,10 @@ def generate_openai_response(user_input_text, language, profile_context, prompt_
     7.  medicines: Common over-the-counter or general types of prescribed medications *related to the condition*. **Explicitly state this is NOT a prescription and they must consult a doctor.**
     8.  urgency: Categorize the urgency (e.g., 'Immediate Emergency', 'Urgent Consult', 'Moderate', 'Low').
     9.  suggested_doctor: The type of medical specialist they might need to see.
-    10. hipaa_disclaimer: The exact disclaimer text: "Disclaimer: I am a virtual AI assistant and not a medical doctor. This information is for educational purposes only and is not a substitute for professional medical advice. Always consult a qualified healthcare provider for diagnosis and treatment."
+    10. nursing_explanation: A simplified nursing explanation of the condition or situation.
+    11. personal_notes: Any additional personalized notes or considerations for the user.
+    12. relevant_information: Any other relevant health information or context.
+    13. hipaa_disclaimer: The exact disclaimer text: "Disclaimer: I am a virtual AI assistant and not a medical doctor. This information is for educational purposes only and is not a substitute for professional medical advice. Always consult a qualified healthcare provider for diagnosis and treatment."
     """
 
     if prompt_type == "symptoms":
@@ -159,7 +168,7 @@ def generate_openai_response(user_input_text, language, profile_context, prompt_
     
     try:
         response = openai.ChatCompletion.create(
-            model="gpt-3.5-turbo", # Use a capable model; gpt-4/gpt-4o are better for complex JSON/reasoning
+            model="gpt-4o", # Recommended for better JSON reliability, gpt-3.5-turbo might be less consistent
             messages=[
                 {"role": "system", "content": "You are a helpful multilingual health assistant. Adhere strictly to the requested JSON format."},
                 {"role": "user", "content": full_prompt}
@@ -178,42 +187,66 @@ def generate_openai_response(user_input_text, language, profile_context, prompt_
 def parse_openai_json(reply):
     """
     Parses the JSON string from OpenAI's reply.
+    It's robust to cases where the reply might contain extra text outside the JSON block.
     Ensures 'remedies' and 'medicines' are always lists.
     """
     try:
-        match = re.search(r'\{.*\}', reply, re.DOTALL)
+        # Try to find a JSON block wrapped in markdown code fences first
+        match = re.search(r'```json\s*(\{.*?\})\s*```', reply, re.DOTALL)
         if match:
-            json_str = match.group(0)
+            json_str = match.group(1)
+            logger.info(f"Found JSON in markdown block: {json_str[:100]}...") # Log snippet for debugging
         else:
-            json_str = reply.strip()
-
+            # If no markdown block, try to parse the whole reply as JSON
+            json_str = reply
+            logger.info(f"Attempting to parse full reply as JSON: {json_str[:100]}...") # Log snippet for debugging
+            
         parsed_data = json.loads(json_str)
 
-        # Ensure remedies and medicines are lists
-        parsed_data['remedies'] = parsed_data.get('remedies') or []
-        if not isinstance(parsed_data['remedies'], list):
-            parsed_data['remedies'] = [parsed_data['remedies']]
+        # Ensure 'remedies' and 'medicines' are lists, even if AI returns strings or null
+        # Use .get() with default to prevent KeyError if the key is missing entirely
+        remedies = parsed_data.get('remedies')
+        if not isinstance(remedies, list):
+            parsed_data['remedies'] = [remedies] if remedies else []
+        
+        medicines = parsed_data.get('medicines')
+        if not isinstance(medicines, list):
+            parsed_data['medicines'] = [medicines] if medicines else []
 
-        parsed_data['medicines'] = parsed_data.get('medicines') or []
-        if not isinstance(parsed_data['medicines'], list):
-            parsed_data['medicines'] = [parsed_data['medicines']]
+        # Add setdefault for new fields to ensure they always exist, even if AI misses them
+        parsed_data.setdefault('nursing_explanation', 'Not provided.')
+        parsed_data.setdefault('personal_notes', 'Not provided.')
+        parsed_data.setdefault('relevant_information', 'Not provided.')
+        parsed_data.setdefault('why_happening_explanation', 'Not provided.')
+        parsed_data.setdefault('immediate_action', 'Not provided.')
+        parsed_data.setdefault('nurse_tips', 'Not provided.')
+
 
         return parsed_data
-
-    except Exception as e:
+    except json.JSONDecodeError as e:
         logger.error(f"JSON parsing failed: {e}. Raw reply: {reply}")
+        # Return a fallback structure to prevent frontend crash
         return {
-            "medical_analysis": "AI response failed to parse correctly.",
-            "root_cause": str(e),
-            "remedies": [],
-            "medicines": [],
-            "detected_condition": "unsure",
-            "why_happening_explanation": "Error parsing AI response.",
-            "immediate_action": "Try again or rephrase symptoms.",
-            "nurse_tips": "Always consult a real doctor.",
-            "hipaa_disclaimer": "Disclaimer: I am a virtual AI assistant...",
-            "urgency": "unknown",
-            "suggested_doctor": "general"
+            "medical_analysis": "I'm sorry, I couldn't fully process the request. Please try again or rephrase your symptoms. (JSON Parse Error)",
+            "root_cause": "Parsing error or unclear AI response.",
+            "remedies": [], "medicines": [], "detected_condition": "unsure",
+            "why_happening_explanation": "Insufficient information.", "immediate_action": "Consult a healthcare professional.",
+            "nurse_tips": "It's important to provide clear and concise information for accurate analysis. Always seek medical advice from a qualified doctor.",
+            "hipaa_disclaimer": "Disclaimer: I am a virtual AI assistant and not a medical doctor. This information is for educational purposes only and is not a substitute for professional medical advice. Always consult a qualified healthcare provider for diagnosis and treatment.",
+            "urgency": "unknown", "suggested_doctor": "general",
+            "nursing_explanation": "Not provided.", "personal_notes": "Not provided.", "relevant_information": "Not provided."
+        }
+    except Exception as e:
+        logger.error(f"Unexpected error in JSON parsing: {e}")
+        return {
+            "medical_analysis": "An unexpected error occurred during analysis. Please try again. (Unknown Error)",
+            "root_cause": "Unknown error.",
+            "remedies": [], "medicines": [], "detected_condition": "unsure",
+            "why_happening_explanation": "An internal error occurred.", "immediate_action": "Consult a healthcare professional.",
+            "nurse_tips": "If issues persist, please contact support. Always seek medical advice from a qualified doctor.",
+            "hipaa_disclaimer": "Disclaimer: I am a virtual AI assistant and not a medical doctor. This information is for educational purposes only and is not a substitute for professional medical advice. Always consult a qualified healthcare provider for diagnosis and treatment.",
+            "urgency": "unknown", "suggested_doctor": "general",
+            "nursing_explanation": "Not provided.", "personal_notes": "Not provided.", "relevant_information": "Not provided."
         }
 
 
@@ -222,22 +255,37 @@ def get_nearby_doctors(specialty, location):
     if not GOOGLE_API_KEY:
         logger.error("GOOGLE_API_KEY is not set for Places API.")
         return []
-    
+        
     try:
-        lat, lng = location.split(",")
+        # Check if location is a dictionary (from frontend), or assume it's a string if it's not
+        if isinstance(location, dict):
+            lat = location.get("lat")
+            lng = location.get("lng")
+            if lat is None or lng is None:
+                logger.error("Location dictionary missing 'lat' or 'lng' keys.")
+                return []
+            location_str = f"{lat},{lng}" # Format as "latitude,longitude" string
+        elif isinstance(location, str) and "," in location: # Handle if it somehow comes as "lat,lng" string
+            location_str = location
+        else:
+            logger.error(f"Invalid location format received: {location}. Expected dict or 'lat,lng' string.")
+            return []
+
         url = "https://maps.googleapis.com/maps/api/place/nearbysearch/json"
         params = {
             "keyword": f"{specialty} doctor",
-            "location": f"{lat},{lng}",
-            "radius": 10000, # 10km
+            "location": location_str, # Use the correctly formatted string
+            "radius": 10000, # 10km radius
             "type": "doctor",
             "key": GOOGLE_API_KEY,
-            "rankby": "prominence"
+            "rankby": "prominence" # Prioritize higher-rated and more significant places
         }
         response = requests.get(url, params=params)
-        response.raise_for_status()
+        response.raise_for_status() # Raise HTTPError for bad responses (4xx or 5xx)
         
         results = response.json().get("results", [])
+        
+        # Filter for results that have a rating and sort them
         filtered_results = [p for p in results if p.get("rating") is not None]
         sorted_results = sorted(
             filtered_results, 
@@ -246,13 +294,15 @@ def get_nearby_doctors(specialty, location):
         )
 
         doctors = []
+        # Limit to top 5 doctors
         for place in sorted_results[:5]:
             doctors.append({
                 "name": place.get("name"),
                 "address": place.get("vicinity"),
                 "rating": place.get("rating"),
                 "open_now": place.get("opening_hours", {}).get("open_now", False),
-                "maps_link": f"https://www.google.com/maps/search/?api=1&query={place.get('name')},{place.get('vicinity')}&query_place_id={place.get('place_id')}"
+                # Ensure the maps_link is correctly formatted and URL-encoded
+                "maps_link": f"https://www.google.com/maps/search/?api=1&query={requests.utils.quote(place.get('name', '') + ',' + place.get('vicinity', ''))}&query_place_id={place.get('place_id')}"
             })
         return doctors
     except requests.exceptions.RequestException as e:
@@ -453,7 +503,9 @@ def analyze_lab_report():
             return jsonify({"error": "OCR failed to extract text from backend for image"}), 500
         final_text_for_ai = extracted_text_from_backend
         # Add extracted_text to response for frontend preview
-        data['extracted_text'] = final_text_for_ai # This modifies 'data' dict before passing to jsonify
+        # NOTE: This modifies the 'data' dict which is then returned by jsonify.
+        # It's better to add it directly to 'parsed_response' later.
+        # data['extracted_text'] = final_text_for_ai 
 
     if not final_text_for_ai:
         return jsonify({"error": "Missing lab report text or image to analyze"}), 400
@@ -474,6 +526,79 @@ def analyze_lab_report():
     # Ensure extracted_text is part of the final response for frontend preview
     parsed_response["extracted_text"] = final_text_for_ai 
     return jsonify(parsed_response)
+
+# --- NEW PASSWORD RESET ENDPOINTS ---
+
+@app.route("/request-password-reset", methods=["POST"])
+def request_password_reset():
+    auth_result = check_api_token()
+    if auth_result:
+        return auth_result
+
+    data = request.get_json()
+    email = data.get("email")
+    frontend_redirect_url = data.get("redirect_to") # Expected from frontend (e.g., https://askdocapp-92cc3.web.app/reset-password.html)
+
+    if not email:
+        return jsonify({"error": "Email is required"}), 400
+    
+    if not frontend_redirect_url:
+        return jsonify({"error": "Redirect URL for password reset is required"}), 400
+
+    logger.info(f"Received password reset request for email: {email}")
+
+    # Call Supabase Auth API to send the magic link/reset email
+    supabase_reset_url = f"{SUPABASE_URL}/auth/v1/recover"
+    headers = {
+        "apikey": SUPABASE_ANON_KEY,
+        "Content-Type": "application/json"
+    }
+    payload = {
+        "email": email,
+        "redirect_to": frontend_redirect_url
+    }
+
+    try:
+        response = requests.post(supabase_reset_url, headers=headers, json=payload)
+        response.raise_for_status() # Raise an exception for HTTP errors (4xx or 5xx)
+
+        logger.info(f"Supabase password reset request sent for {email}. Status: {response.status_code}")
+        return jsonify({"message": "Password reset email sent. Please check your inbox (and spam folder!)."}), 200
+    except requests.exceptions.RequestException as e:
+        logger.error(f"Error sending password reset request to Supabase: {e}")
+        # Return a generic error message to the user for security
+        return jsonify({"error": "Failed to send password reset email. Please try again later."}), 500
+    except Exception as e:
+        logger.error(f"Unexpected error in /request-password-reset: {e}")
+        return jsonify({"error": "An unexpected error occurred."}), 500
+
+
+@app.route("/verify-password-reset", methods=["GET"])
+def verify_password_reset():
+    """
+    This endpoint is designed to be the 'redirectTo' target from Supabase's email link.
+    It will extract tokens and redirect to the frontend password reset page.
+    """
+    # If Supabase is configured to redirect to THIS endpoint (`/verify-password-reset`),
+    # it would pass tokens as query parameters, NOT hash parameters.
+    # Example: http://yourbackend.com/verify-password-reset?access_token=...&refresh_token=...
+
+    access_token = request.args.get("access_token")
+    refresh_token = request.args.get("refresh_token")
+    # You might also get 'type=recovery' and 'expires_in' etc.
+
+    if access_token and refresh_token:
+        # Construct the URL for your frontend reset page, appending tokens as hash
+        # This assumes your frontend `reset-password.html` page is designed to
+        # read these from the hash.
+        frontend_reset_url = "https://askdocapp-92cc3.web.app/reset-password.html" # Ensure this matches your actual frontend URL
+        full_redirect_url = f"{frontend_reset_url}#access_token={access_token}&refresh_token={refresh_token}"
+        logger.info(f"Redirecting to frontend reset page: {full_redirect_url}")
+        return redirect(full_redirect_url)
+    else:
+        logger.warning("Missing access_token or refresh_token in /verify-password-reset. Redirecting to error.")
+        # If tokens are missing, redirect to your frontend with an error status or specific error page
+        return redirect("https://askdocapp-92cc3.web.app/reset-password.html?error=invalid_link") # Ensure this matches your actual frontend URL
 
 
 if __name__ == '__main__':
