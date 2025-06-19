@@ -542,41 +542,49 @@ def save_history():
     try:
         data = request.get_json()
         user_id = data.get("user_id")
-        symptoms = data.get("query")  # same as user input
+        query = data.get("query")
         response_data = data.get("response")
 
-        if not user_id or not symptoms or not response_data:
+        if not user_id or not query or not response_data:
             return jsonify({"error": "Missing required fields"}), 400
 
-        # Extract fields from response_data
         parsed = {
             "user_id": user_id,
-            "symptoms": symptoms,
+            "symptoms": query,
             "medical_analysis": response_data.get("medical_analysis", ""),
             "remedies": ", ".join(response_data.get("remedies", [])),
             "urgency": response_data.get("urgency", ""),
             "medicines": ", ".join(response_data.get("medicines", [])),
-            "health_risks": json.dumps(response_data.get("health_risks", {})),
+            "health_risks": response_data.get("health_risks", {}),
             "suggested_doctor": response_data.get("suggested_doctor", ""),
-            "raw_text": json.dumps(response_data),  # full JSON for reference
+            "raw_text": json.dumps(response_data),
             "timestamp": datetime.utcnow().isoformat()
         }
 
-        headers = {
+        # ✅ DEBUG LOGS — add here before the insert
+        logger.info(f"Saving history for user_id: {user_id}")
+        logger.info(f"Payload: {json.dumps(parsed, indent=2)}")
+
+        supabase_headers = {
             "apikey": SUPABASE_ANON_KEY,
             "Authorization": f"Bearer {SUPABASE_ANON_KEY}",
-            "Content-Type": "application/json"
+            "Content-Type": "application/json",
         }
 
-        insert_url = f"{SUPABASE_URL}/rest/v1/history"
-        result = requests.post(insert_url, headers=headers, json=parsed)
+        result = requests.post(
+            f"{SUPABASE_URL}/rest/v1/history",
+            headers=supabase_headers,
+            json=parsed
+        )
 
         if result.status_code >= 400:
+            logger.error(f"Supabase Insert Error: {result.text}")
             return jsonify({"error": "Supabase insert failed", "details": result.text}), 500
 
         return jsonify({"success": True}), 200
 
     except Exception as e:
+        logger.error(f"Exception during history insert: {str(e)}")
         return jsonify({"error": str(e)}), 500
 
         
