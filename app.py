@@ -541,53 +541,63 @@ def save_history():
 
     try:
         data = request.get_json()
-        user_id = data.get("user_id")
-        query = data.get("query")
-        response_data = data.get("response")
+        user_id = data.get('user_id')
+        query = data.get('query')
+        response = data.get('response')
 
-        if not user_id or not query or not response_data:
-            return jsonify({"error": "Missing required fields"}), 400
+        if not user_id or not query or not response:
+            return jsonify({"error": "Missing user_id, query, or response"}), 400
 
-        parsed = {
+        # Parse AI response if it's a stringified JSON
+        parsed = response if isinstance(response, dict) else json.loads(response)
+
+        # 🔒 Safe conversion to arrays for Supabase
+        medicines = parsed.get("medicines")
+        remedies = parsed.get("remedies")
+
+        if not isinstance(medicines, list):
+            medicines = [medicines] if medicines else []
+
+        if not isinstance(remedies, list):
+            remedies = [remedies] if remedies else []
+
+        payload = {
+            "id": str(uuid.uuid4()),
             "user_id": user_id,
-            "symptoms": query,
-            "medical_analysis": response_data.get("medical_analysis", ""),
-            "remedies": ", ".join(response_data.get("remedies", [])),
-            "urgency": response_data.get("urgency", ""),
-            "medicines": ", ".join(response_data.get("medicines", [])),
-            "health_risks": response_data.get("health_risks", {}),
-            "suggested_doctor": response_data.get("suggested_doctor", ""),
-            "raw_text": json.dumps(response_data),
+            "query": query,
+            "detected_condition": parsed.get("detected_condition"),
+            "medical_analysis": parsed.get("medical_analysis"),
+            "remedies": remedies,
+            "urgency": parsed.get("urgency"),
+            "medicines": medicines,
+            "suggested_doctor": parsed.get("suggested_doctor"),
+            "raw_text": json.dumps(parsed),
             "timestamp": datetime.utcnow().isoformat()
         }
 
-        # ✅ DEBUG LOGS — add here before the insert
         logger.info(f"Saving history for user_id: {user_id}")
-        logger.info(f"Payload: {json.dumps(parsed, indent=2)}")
+        logger.info(f"Payload: {json.dumps(payload, indent=2)}")
 
-        supabase_headers = {
+        supabase_url = f"https://nlfvwbjpeywcessqyqac.supabase.co/rest/v1/history"
+        headers = {
             "apikey": SUPABASE_ANON_KEY,
             "Authorization": f"Bearer {SUPABASE_ANON_KEY}",
             "Content-Type": "application/json",
+            "Prefer": "return=representation"
         }
 
-        result = requests.post(
-            f"{SUPABASE_URL}/rest/v1/history",
-            headers=supabase_headers,
-            json=parsed
-        )
+        r = requests.post(supabase_url, headers=headers, data=json.dumps(payload))
+        if r.status_code != 201:
+            logger.error(f"Supabase Insert Error: {r.text}")
+            return jsonify({"error": "Failed to save history", "details": r.text}), 500
 
-        if result.status_code >= 400:
-            logger.error(f"Supabase Insert Error: {result.text}")
-            return jsonify({"error": "Supabase insert failed", "details": result.text}), 500
-
-        return jsonify({"success": True}), 200
+        return jsonify({"success": True, "data": r.json()}), 200
 
     except Exception as e:
-        logger.error(f"Exception during history insert: {str(e)}")
+        logger.exception("Exception while saving history")
         return jsonify({"error": str(e)}), 500
 
-        
+
 @app.route('/api/history', methods=['GET'])
 def get_history():
     if request.headers.get("Authorization") != f"Bearer {API_AUTH_TOKEN}":
@@ -598,21 +608,23 @@ def get_history():
         return jsonify({"error": "Missing user_id"}), 400
 
     try:
-        url = f"{SUPABASE_URL}/rest/v1/history?user_id=eq.{user_id}&order=created_at.desc"
+        supabase_url = f"https://nlfvwbjpeywcessqyqac.supabase.co/rest/v1/history?user_id=eq.{user_id}&order=timestamp.desc"
         headers = {
             "apikey": SUPABASE_ANON_KEY,
-            "Authorization": f"Bearer {SUPABASE_ANON_KEY}"
+            "Authorization": f"Bearer {SUPABASE_ANON_KEY}",
+            "Content-Type": "application/json"
         }
 
-        response = requests.get(url, headers=headers)
+        response = requests.get(supabase_url, headers=headers)
         if response.status_code != 200:
+            logger.error(f"Supabase fetch error: {response.text}")
             return jsonify({"error": "Failed to fetch history", "details": response.text}), 500
 
-        return jsonify(response.json())
-    except Exception as e:
-        logger.error(f"Error fetching history: {str(e)}")
-        return jsonify({"error": str(e)}), 500
+        return jsonify(response.json()), 200
 
+    except Exception as e:
+        logger.exception("Exception while fetching history")
+        return jsonify({"error": str(e)}), 500
 
 
 # --- NEW PASSWORD RESET ENDPOINTS ---
