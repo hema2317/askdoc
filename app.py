@@ -12,6 +12,8 @@ import psycopg2
 from psycopg2 import OperationalError
 import base64
 from dotenv import load_dotenv
+from flask import request, jsonify
+from flask import Blueprint
 
 load_dotenv()  # ✅ Load environment variables
 
@@ -254,6 +256,30 @@ def parse_openai_json(reply):
             "nursing_explanation": "Not provided.", "personal_notes": "Not provided.", "relevant_information": "Not provided."
         }
 
+@app.route('/api/doctors', methods=['GET'])
+def doctors_api():
+    try:
+        lat = request.args.get('lat')
+        lng = request.args.get('lng')
+        specialty = request.args.get('specialty', 'general')  # default to 'general' if not provided
+
+        if not lat or not lng:
+            return jsonify({'error': 'Missing latitude or longitude'}), 400
+
+        # Convert to float safely
+        try:
+            location = {'lat': float(lat), 'lng': float(lng)}
+        except ValueError:
+            return jsonify({'error': 'Invalid latitude or longitude format'}), 400
+
+        # Call helper function to fetch doctors using Google Places API
+        doctors = get_nearby_doctors(specialty, location)
+
+        return jsonify({'results': doctors}), 200
+
+    except Exception as e:
+        logger.exception("Error in /api/doctors")
+        return jsonify({'error': 'Internal server error'}), 500
 
 def get_nearby_doctors(specialty, location):
     """Fetches nearby doctors using Google Places API."""
@@ -373,40 +399,49 @@ def health():
     return jsonify({"status": "ok"})
 
 @app.route("/analyze", methods=["POST"])
-def analyze():
-    # Authentication check
+def analyze_symptoms():
+    # 🔐 Authentication check
     auth_result = check_api_token()
     if auth_result:
-        return auth_result # Return Unauthorized if check fails
+        return auth_result  # Return 401 if token invalid
 
-    data = request.json
-    symptoms = data.get("symptoms", "")
-    language = data.get("language", "English")
-    profile_data = data.get("profile", {}) # Expecting dict, not empty string
-    location = data.get("location", "")
+    try:
+        data = request.get_json()
+        symptoms = data.get("symptoms", "")
+        language = data.get("language", "English")
+        profile = data.get("profile", {})
+        location = data.get("location", "")
 
-    if not symptoms:
-        return jsonify({"error": "No symptoms provided"}), 400
+        if not symptoms:
+            return jsonify({"error": "Symptoms required"}), 400
 
-    logger.info(f"[ANALYZE] Input: {symptoms}")
-    profile_context = build_profile_context(profile_data) # Build context string
-    
-    # Generate response from OpenAI using the detailed prompt
-    reply_content = generate_openai_response(symptoms, language, profile_context, prompt_type="symptoms")
+        logger.info(f"[ANALYZE] Input: {symptoms}")
 
-    if not reply_content:
-        return jsonify({"error": "OpenAI failed to generate response"}), 500
+        # 🔧 Build AI prompt with profile context
+        profile_context = build_profile_context(profile)
+        prompt = build_prompt(symptoms, profile_context)  # You can merge or update this to your preferred logic
 
-    # Parse the JSON response from OpenAI
-    parsed_response = parse_openai_json(reply_content)
+        # 🤖 Get AI response
+        ai_response = generate_openai_response(prompt, language)
 
-    # Add nearby doctors if location and suggested doctor are available
-    if location and parsed_response.get("suggested_doctor"):
-        parsed_response["nearby_doctors"] = get_nearby_doctors(parsed_response["suggested_doctor"], location)
-    else:
-        parsed_response["nearby_doctors"] = [] # Ensure it's always an empty list if not found
+        if not ai_response:
+            return jsonify({"error": "OpenAI failed to generate response"}), 500
 
-    return jsonify(parsed_response)
+        # 🧠 Parse the structured result from AI
+        result = parse_medical_response(ai_response)  # Assumes AI returns JSON-structured reply
+
+        # 📍 Optional: Add doctor suggestions if location and specialty available
+        if location and result.get("suggested_doctor"):
+            result["nearby_doctors"] = get_nearby_doctors(result["suggested_doctor"], location)
+        else:
+            result["nearby_doctors"] = []
+
+        return jsonify(result), 200
+
+    except Exception as e:
+        logger.exception("Error in /analyze route")
+        return jsonify({'error': 'Failed to analyze symptoms'}), 500
+
 
 
 @app.route("/api/ask", methods=["POST"])
