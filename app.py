@@ -32,7 +32,7 @@ API_AUTH_TOKEN = os.getenv("API_AUTH_TOKEN") # The secret token expected from fr
 # These are used if your backend initiates password reset via Supabase Auth API,
 # or if you use the backend to proxy other Supabase operations.
 # For password reset initiation, the Anon Key is sufficient.
-SUPABASE_URL = os.getenv("SUPABASE_URL", "https://askdocapp-92cc3.supabase.co")
+SUPABASE_URL = os.getenv("SUPABASE_URL", "https://nlfvwbjpeywcessqyqac.supabase.co")
 SUPABASE_ANON_KEY = os.getenv("SUPABASE_ANON_KEY", "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im5sZnZ3YmpwZXl3Y2Vzc3F5cWFjIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NDU4NTczNjQsImV4cCI6MjA2MTQzMzM2NH0.zL84P7bK7qHxJt8MtkTPkqNe4U_K512ZgtpPvD9PoRI")
 
 
@@ -539,62 +539,65 @@ def save_history():
     if request.headers.get("Authorization") != f"Bearer {API_AUTH_TOKEN}":
         return jsonify({"error": "Unauthorized"}), 401
 
+    data = request.get_json()
+    user_id = data.get('user_id')
+    query = data.get('query')
+    response = data.get('response')
+
+    if not user_id or not query or not response:
+        return jsonify({"error": "Missing user_id, query, or response"}), 400
+
     try:
-        data = request.get_json()
-        user_id = data.get("user_id")
-        query = data.get("query")
-        response_data = data.get("response")
-
-        if not user_id or not query or not response_data:
-            return jsonify({"error": "Missing required fields"}), 400
-
-        supabase_headers = {
-            "apikey": SUPABASE_ANON_KEY,
-            "Authorization": f"Bearer {SUPABASE_ANON_KEY}",
-            "Content-Type": "application/json",
+        headers = {
+            'apikey': SUPABASE_ANON_KEY,
+            'Authorization': f'Bearer {SUPABASE_ANON_KEY}',
+            'Content-Type': 'application/json'
         }
 
         payload = {
-            "user_id": user_id,
-            "query": query,
-            "response": json.dumps(response_data),
-            "timestamp": datetime.utcnow().isoformat()
+            'user_id': user_id,
+            'query': query,
+            'response': response,
+            'created_at': datetime.utcnow().isoformat()
         }
 
-        result = requests.post(
-            f"{SUPABASE_URL}/rest/v1/medical_history",
-            headers=supabase_headers,
-            json=payload
-        )
+        url = f"{SUPABASE_URL}/rest/v1/history"
+        r = requests.post(url, headers=headers, json=payload)
 
-        if result.status_code >= 400:
-            return jsonify({"error": "Supabase insert failed", "detail": result.text}), 500
+        if r.status_code not in [200, 201]:
+            return jsonify({"error": "Failed to save history to Supabase", "details": r.text}), 500
 
         return jsonify({"success": True}), 200
-
     except Exception as e:
+        logger.error(f"Error saving history: {str(e)}")
         return jsonify({"error": str(e)}), 500
-        
-@app.route("/api/history", methods=["GET"])
-def get_history():
-    user_id = request.args.get("user_id")
 
+        
+@app.route('/api/history', methods=['GET'])
+def get_history():
+    if request.headers.get("Authorization") != f"Bearer {API_AUTH_TOKEN}":
+        return jsonify({"error": "Unauthorized"}), 401
+
+    user_id = request.args.get('user_id')
     if not user_id:
         return jsonify({"error": "Missing user_id"}), 400
 
-    headers = {
-        "apikey": SUPABASE_ANON_KEY,
-        "Authorization": f"Bearer {SUPABASE_ANON_KEY}",
-    }
+    try:
+        url = f"{SUPABASE_URL}/rest/v1/history?user_id=eq.{user_id}&order=created_at.desc"
+        headers = {
+            "apikey": SUPABASE_ANON_KEY,
+            "Authorization": f"Bearer {SUPABASE_ANON_KEY}"
+        }
 
-    url = f"{SUPABASE_URL}/rest/v1/history?user_id=eq.{user_id}&order=created_at.desc"
+        response = requests.get(url, headers=headers)
+        if response.status_code != 200:
+            return jsonify({"error": "Failed to fetch history", "details": response.text}), 500
 
-    response = requests.get(url, headers=headers)
+        return jsonify(response.json())
+    except Exception as e:
+        logger.error(f"Error fetching history: {str(e)}")
+        return jsonify({"error": str(e)}), 500
 
-    if response.status_code != 200:
-        return jsonify({"error": "Failed to fetch history", "details": response.text}), 500
-
-    return jsonify({"data": response.json()}), 200
 
 
 # --- NEW PASSWORD RESET ENDPOINTS ---
