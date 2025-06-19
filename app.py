@@ -533,6 +533,8 @@ def analyze_lab_report():
     parsed_response["extracted_text"] = final_text_for_ai 
     return jsonify(parsed_response)
     
+import requests
+
 @app.route("/api/history", methods=["POST"])
 def save_history():
     if request.headers.get("Authorization") != f"Bearer {API_AUTH_TOKEN}":
@@ -541,35 +543,55 @@ def save_history():
     data = request.get_json()
     user_id = data.get("user_id")
     query = data.get("query")
-    response = data.get("response")
+    response_json = data.get("response")
 
-    if not user_id or not query or not response:
-        return jsonify({"error": "Missing required fields"}), 400
+    if not user_id or not query or not response_json:
+        return jsonify({"error": "Missing user_id, query, or response"}), 400
 
-    item = {
-        "id": str(uuid.uuid4()),
-        "text": query,
-        "response": response,
-        "time": request.headers.get("X-Timestamp") or "Just Now",
+    supabase_url = SUPABASE_URL
+    supabase_key = SUPABASE_ANON_KEY
+
+    insert_data = {
+        "user_id": user_id,
+        "query": query,
+        "response": response_json
     }
 
-    if user_id not in memory_store["history"]:
-        memory_store["history"][user_id] = []
+    supabase_insert_url = f"{supabase_url}/rest/v1/history"
+    headers = {
+        "apikey": supabase_key,
+        "Authorization": f"Bearer {supabase_key}",
+        "Content-Type": "application/json",
+        "Prefer": "return=representation"
+    }
 
-    memory_store["history"][user_id].insert(0, item)
+    result = requests.post(supabase_insert_url, headers=headers, json=insert_data)
 
-    print(f"[SAVE HISTORY] Added for {user_id}: {item['text']}")
-    return jsonify({"success": True, "saved": item}), 200
+    if result.status_code not in [200, 201]:
+        return jsonify({"error": "Failed to save history to Supabase", "details": result.text}), 500
 
+    return jsonify({"success": True, "saved": result.json()}), 200
 
 @app.route("/api/history", methods=["GET"])
 def get_history():
     user_id = request.args.get("user_id")
+
     if not user_id:
         return jsonify({"error": "Missing user_id"}), 400
 
-    history = memory_store["history"].get(user_id, [])
-    return jsonify({"data": history}), 200
+    headers = {
+        "apikey": SUPABASE_ANON_KEY,
+        "Authorization": f"Bearer {SUPABASE_ANON_KEY}",
+    }
+
+    url = f"{SUPABASE_URL}/rest/v1/history?user_id=eq.{user_id}&order=created_at.desc"
+
+    response = requests.get(url, headers=headers)
+
+    if response.status_code != 200:
+        return jsonify({"error": "Failed to fetch history", "details": response.text}), 500
+
+    return jsonify({"data": response.json()}), 200
 
 
 # --- NEW PASSWORD RESET ENDPOINTS ---
