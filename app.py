@@ -527,6 +527,7 @@ def analyze_lab_report():
     # Ensure extracted_text is part of the final response for frontend preview
     parsed_response["extracted_text"] = final_text_for_ai 
     return jsonify(parsed_response)
+    
 @app.route("/api/history", methods=["POST"])
 def save_history():
     if request.headers.get("Authorization") != f"Bearer {API_AUTH_TOKEN}":
@@ -549,20 +550,22 @@ def save_history():
 
     if user_id not in memory_store["history"]:
         memory_store["history"][user_id] = []
+
     memory_store["history"][user_id].insert(0, item)
 
+    print(f"[SAVE HISTORY] Added for {user_id}: {item['text']}")
     return jsonify({"success": True, "saved": item}), 200
+
 
 @app.route("/api/history", methods=["GET"])
 def get_history():
-    if request.headers.get("Authorization") != f"Bearer {API_AUTH_TOKEN}":
-        return jsonify({"error": "Unauthorized"}), 401
-
     user_id = request.args.get("user_id")
     if not user_id:
-        return jsonify({"error": "User ID required"}), 400
+        return jsonify({"error": "Missing user_id"}), 400
 
-    return jsonify(memory_store["history"].get(user_id, []))
+    history = memory_store["history"].get(user_id, [])
+    return jsonify({"data": history}), 200
+
 
 # --- NEW PASSWORD RESET ENDPOINTS ---
 
