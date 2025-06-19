@@ -400,37 +400,28 @@ def health():
 
 @app.route("/analyze", methods=["POST"])
 def analyze_symptoms():
-    # 🔐 Authentication check
     auth_result = check_api_token()
     if auth_result:
-        return auth_result  # Return 401 if token invalid
+        return auth_result
 
     try:
         data = request.get_json()
-        symptoms = data.get("symptoms", "")
+        symptoms = data.get('symptoms')
+        profile_data = data.get('profile', {})
+        location = data.get('location')
         language = data.get("language", "English")
-        profile = data.get("profile", {})
-        location = data.get("location", "")
 
         if not symptoms:
-            return jsonify({"error": "Symptoms required"}), 400
+            return jsonify({'error': 'Symptoms required'}), 400
 
         logger.info(f"[ANALYZE] Input: {symptoms}")
+        profile_context = build_profile_context(profile_data)
+        
+        # Use existing function to get OpenAI result
+        ai_response = generate_openai_response(symptoms, language, profile_context, prompt_type="symptoms")
+        result = parse_openai_json(ai_response)
 
-        # 🔧 Build AI prompt with profile context
-        profile_context = build_profile_context(profile)
-        prompt = build_prompt(symptoms, profile_context)  # You can merge or update this to your preferred logic
-
-        # 🤖 Get AI response
-        ai_response = generate_openai_response(prompt, language)
-
-        if not ai_response:
-            return jsonify({"error": "OpenAI failed to generate response"}), 500
-
-        # 🧠 Parse the structured result from AI
-        result = parse_medical_response(ai_response)  # Assumes AI returns JSON-structured reply
-
-        # 📍 Optional: Add doctor suggestions if location and specialty available
+        # Optional: Add doctor suggestions
         if location and result.get("suggested_doctor"):
             result["nearby_doctors"] = get_nearby_doctors(result["suggested_doctor"], location)
         else:
@@ -441,7 +432,6 @@ def analyze_symptoms():
     except Exception as e:
         logger.exception("Error in /analyze route")
         return jsonify({'error': 'Failed to analyze symptoms'}), 500
-
 
 
 @app.route("/api/ask", methods=["POST"])
