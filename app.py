@@ -17,10 +17,9 @@ CORS(app, resources={r"/*": {"origins": "*"}})
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# ✅ In-memory store for user history
-memory_store = {
-    "history": {}
-}
+load_dotenv()
+app = Flask(__name__)
+
 
 # --- Environment Variables ---
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
@@ -535,43 +534,47 @@ def analyze_lab_report():
     
 import requests
 
-@app.route("/api/history", methods=["POST"])
+@app.route('/api/history', methods=['POST'])
 def save_history():
     if request.headers.get("Authorization") != f"Bearer {API_AUTH_TOKEN}":
         return jsonify({"error": "Unauthorized"}), 401
 
-    data = request.get_json()
-    user_id = data.get("user_id")
-    query = data.get("query")
-    response_json = data.get("response")
+    try:
+        data = request.get_json()
+        user_id = data.get("user_id")
+        query = data.get("query")
+        response_data = data.get("response")
 
-    if not user_id or not query or not response_json:
-        return jsonify({"error": "Missing user_id, query, or response"}), 400
+        if not user_id or not query or not response_data:
+            return jsonify({"error": "Missing required fields"}), 400
 
-    supabase_url = SUPABASE_URL
-    supabase_key = SUPABASE_ANON_KEY
+        supabase_headers = {
+            "apikey": SUPABASE_ANON_KEY,
+            "Authorization": f"Bearer {SUPABASE_ANON_KEY}",
+            "Content-Type": "application/json",
+        }
 
-    insert_data = {
-        "user_id": user_id,
-        "query": query,
-        "response": response_json
-    }
+        payload = {
+            "user_id": user_id,
+            "query": query,
+            "response": json.dumps(response_data),
+            "timestamp": datetime.utcnow().isoformat()
+        }
 
-    supabase_insert_url = f"{supabase_url}/rest/v1/history"
-    headers = {
-        "apikey": supabase_key,
-        "Authorization": f"Bearer {supabase_key}",
-        "Content-Type": "application/json",
-        "Prefer": "return=representation"
-    }
+        result = requests.post(
+            f"{SUPABASE_URL}/rest/v1/medical_history",
+            headers=supabase_headers,
+            json=payload
+        )
 
-    result = requests.post(supabase_insert_url, headers=headers, json=insert_data)
+        if result.status_code >= 400:
+            return jsonify({"error": "Supabase insert failed", "detail": result.text}), 500
 
-    if result.status_code not in [200, 201]:
-        return jsonify({"error": "Failed to save history to Supabase", "details": result.text}), 500
+        return jsonify({"success": True}), 200
 
-    return jsonify({"success": True, "saved": result.json()}), 200
-
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+        
 @app.route("/api/history", methods=["GET"])
 def get_history():
     user_id = request.args.get("user_id")
