@@ -11,15 +11,15 @@ import requests
 import psycopg2
 from psycopg2 import OperationalError
 import base64
+from dotenv import load_dotenv
 
-app = Flask(__name__)
+load_dotenv()  # ✅ Load environment variables
+
+app = Flask(__name__)  # ✅ Define app only once
 CORS(app, resources={r"/*": {"origins": "*"}})
+
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
-
-load_dotenv()
-app = Flask(__name__)
-
 
 # --- Environment Variables ---
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
