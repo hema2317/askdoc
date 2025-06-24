@@ -465,6 +465,42 @@ def analyze_symptoms():
         logger.exception("Error in /analyze route")
         return jsonify({'error': 'Failed to analyze symptoms'}), 500
 
+@app.route("/ask", methods=["POST"])
+def analyze_chat_symptom():
+    try:
+        # Authorization check (optional but recommended)
+        auth_header = request.headers.get("Authorization")
+        if not auth_header or not auth_header.startswith("Bearer "):
+            return jsonify({"error": "Missing or invalid token"}), 401
+
+        data = request.get_json()
+        user_query = data.get("query", "")
+        profile = data.get("profile", {})
+
+        if not user_query:
+            return jsonify({"error": "Missing query"}), 400
+
+        # Construct prompt with personalization
+        profile_context = build_profile_context(profile)
+        prompt = f"""You are an AI medical assistant. The patient has this context:\n{profile_context}\n\nUser says: "{user_query}"\n\nBased on this, respond with:\n- Possible condition\n- Remedy\n- Urgency level\n- Which doctor to see\nFormat as JSON."""
+
+        openai_response = openai.ChatCompletion.create(
+            model="gpt-4",
+            messages=[
+                { "role": "system", "content": "You are a helpful medical assistant." },
+                { "role": "user", "content": prompt }
+            ],
+            temperature=0.5,
+            max_tokens=500
+        )
+
+        raw = openai_response["choices"][0]["message"]["content"]
+        response_json = safe_parse_json(raw)
+        return jsonify(response_json)
+
+    except Exception as e:
+        print(f"Error in /ask: {e}")
+        return jsonify({"error": "Failed to process symptom"}), 500
 
 @app.route("/api/ask", methods=["POST"])
 @cross_origin() # Allow cross-origin requests
