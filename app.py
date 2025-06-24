@@ -782,98 +782,111 @@ def verify_password_reset():
 @app.route('/analyze-trends', methods=['POST'])
 @cross_origin() # Allow cross-origin requests
 @token_required
-def analyze_trends(current_user=None): # current_user will be passed by the token_required decorator
+def analyze_trends(current_user=None):
     try:
         data = request.get_json()
-
-        symptoms = data.get("symptoms", []) # This should be a list of symptom log entries
-        profile_context = data.get("profile_context", "") # This should be a pre-built string or dict
+        symptoms = data.get("symptoms", [])
+        profile_context = data.get("profile_context", "")
 
         if not symptoms or not isinstance(symptoms, list):
             logger.error("Missing or invalid symptom data for trend analysis.")
             return jsonify({"error": "Missing or invalid symptom data"}), 400
         
-        # Build the trend input string for the LLM
-        trend_input = "User's Symptom Timeline:\n"
+        # Build structured symptom timeline
+        symptom_timeline = []
         for entry in symptoms:
-            date = entry.get("date", "N/A")
-            issue = entry.get("issue", "N/A")
-            symptom = entry.get("symptom", "N/A")
-            severity = entry.get("severity", "N/A")
-            status = entry.get("status", "N/A")
-            trend_input += f"- Date: {date}, Issue: {issue}, Symptom: {symptom}, Severity: {severity}/10, Status: {status}\n"
+            symptom_timeline.append({
+                "date": entry.get("date", "N/A"),
+                "issue": entry.get("issue", "N/A"),
+                "symptom": entry.get("symptom", "N/A"),
+                "severity": entry.get("severity", "N/A"),
+                "status": entry.get("status", "N/A")
+            })
 
         prompt = f"""
-You are a medical AI assistant analyzing a user's symptom timeline to identify health trends.
+You are a medical AI assistant analyzing symptom data to provide a professional health summary.
+
+Patient Context:
 {profile_context}
 
-The user has logged the following symptoms over time:
+Symptom Timeline:
+{json.dumps(symptom_timeline, indent=2)}
 
-{trend_input}
+Please generate a structured health summary with these sections:
 
-Please generate a concise and actionable health trend summary based on the provided timeline.
-The summary should be in 4-6 bullet points and adhere to the following:
-- Identify and describe **patterns or recurring symptoms** (e.g., "Headaches appearing every Tuesday").
-- Mention if the overall **condition seems to be improving, worsening, or remaining stable** based on severity and status.
-- **Suggest if medical attention is advised** (e.g., "Consult a doctor if symptoms persist").
-- Offer **AI-generated general tips** (e.g., "Ensure adequate hydration," "Prioritize consistent sleep," "Consider stress reduction techniques.").
-- Include **citations** (at least 1-2 credible sources like CDC, Mayo Clinic, WebMD) related to common trends or general health advice in the format: "Citations: [Title](URL), [Title](URL)". If no direct citation applies, state "No specific citations for trends."
+1. Key Observations (2-3 bullet points):
+   - Identify notable patterns in timing, frequency, or symptom clusters
+   - Note any progression trends (improving/worsening/stable)
 
-Example of desired output format for trends:
-- Pattern identified: ...
-- Trend observed: ...
-- Medical advice: ...
-- AI tips: ...
-Citations: [Title](URL), [Title](URL)
+2. Clinical Considerations (1-2 bullet points):
+   - Flag any symptoms that may warrant medical evaluation
+   - Note potential risk factors based on the patterns
+
+3. Recommended Actions (2-3 bullet points):
+   - Suggest specific self-care measures
+   - Recommend when to seek professional care
+   - Provide lifestyle adjustment suggestions
+
+4. Supporting Evidence:
+   - Include 1-2 relevant citations from authoritative medical sources
+   - Format as: [Source Name](URL)
+
+Guidelines:
+- Use clear, professional language without bold formatting
+- Be concise but comprehensive
+- Maintain neutral, evidence-based tone
+- Prioritize actionable recommendations
 """
 
         response = openai.ChatCompletion.create(
-            model="gpt-4o", # Use gpt-4o for better performance and instruction following
+            model="gpt-4o",
             messages=[
-                {"role": "system", "content": "You are a helpful medical AI assistant summarizing health trends based on provided symptom timelines."},
+                {"role": "system", "content": "You are a medical analyst creating professional health summaries."},
                 {"role": "user", "content": prompt}
             ],
-            temperature=0.7,
-            max_tokens=600
+            temperature=0.6,
+            max_tokens=650
         )
 
         summary_text = response['choices'][0]['message']['content'].strip()
 
-        # Extract citations from the summary_text
-        citations_match = re.search(r'Citations:\s*(.*)', summary_text, re.IGNORECASE)
-        citations_list = []
-        if citations_match:
-            citations_str = citations_match.group(1).strip()
-            # Remove the citations line from the summary text
-            summary_text = summary_text.replace(citations_match.group(0), "").strip()
-
-            if citations_str.lower() != "no specific citations for trends.":
-                # Regex to find [Title](URL) patterns
-                link_pattern = re.compile(r'\[(.*?)\]\((.*?)\)')
-                for match in link_pattern.finditer(citations_str):
-                    citations_list.append({"title": match.group(1), "url": match.group(2)})
+        # Process citations
+        citations = []
+        citation_pattern = re.compile(r'\[([^\]]+)\]\(([^)]+)\)')
+        matches = citation_pattern.findall(summary_text)
         
-        # Add a default citation if citations_list is empty, to cover the guideline
-        if not citations_list:
-            citations_list.append({
-                "title": "General Health Trends & Wellness",
-                "url": "https://www.who.int/health-topics/health-and-wellness" # Example generic URL
+        for title, url in matches:
+            citations.append({"title": title, "url": url})
+            summary_text = summary_text.replace(f"[{title}]({url})", title)
+
+        # Ensure at least one citation
+        if not citations:
+            citations.append({
+                "title": "WHO Health and Wellness Guidelines",
+                "url": "https://www.who.int/health-topics/health-and-wellness"
             })
 
+        # Clean up formatting
+        summary_text = re.sub(r'\*\*(.*?)\*\*', r'\1', summary_text)  # Remove ** markers
+        summary_text = re.sub(r'\n{3,}', '\n\n', summary_text)  # Remove extra newlines
 
-        return jsonify({ 
+        return jsonify({
             "summary": summary_text,
-            "citations": citations_list # Return citations as a list of objects
+            "citations": citations
         })
 
     except openai.APIError as e:
-        logger.error(f"OpenAI API error in /analyze-trends: {e.status_code} - {e.response}")
-        return jsonify({"error": "AI trend analysis failed due to API error", "details": str(e.response)}), 500
+        logger.error(f"OpenAI API error: {e.status_code} - {e.response}")
+        return jsonify({
+            "error": "Analysis service unavailable",
+            "details": "Our health analysis service is temporarily unavailable. Please try again later."
+        }), 503
     except Exception as e:
-        logger.exception("AI trend summary error:") # Logs full traceback
-        return jsonify({"error": "Trend analysis failed", "details": str(e)}), 500
-
-
+        logger.exception("Trend analysis error")
+        return jsonify({
+            "error": "Analysis failed",
+            "details": "We encountered an error processing your request. Our team has been notified."
+        }), 500
 if __name__ == '__main__':
     port = int(os.environ.get("PORT", 10000))  
     app.run(host='0.0.0.0', port=port)
