@@ -195,13 +195,12 @@ def parse_openai_json(reply):
     """
     Parses the JSON string from OpenAI's reply.
     It's robust to cases where the reply might contain extra text outside the JSON block.
-    Ensures 'remedies' and 'medicines' are always lists.
+    Ensures 'remedies' and 'medicines' are always lists, and adds default for new fields.
     """
     try:
         # Try to find a JSON block wrapped in markdown code fences first
-        match = re.search(r'
-json\s*(\{.*?\})\s*
-', reply, re.DOTALL)
+        # CRITICAL FIX: Use triple-quoted raw string for multiline regex
+        match = re.search(r'```json\s*(\{.*?\})\s*```', reply, re.DOTALL)
         if match:
             json_str = match.group(1)
             logger.info(f"Found JSON in markdown block: {json_str[:100]}...") # Log snippet for debugging
@@ -213,11 +212,10 @@ json\s*(\{.*?\})\s*
         parsed_data = json.loads(json_str)
 
         # Ensure 'remedies' and 'medicines' are lists, even if AI returns strings or null
-        # Use .get() with default to prevent KeyError if the key is missing entirely
         remedies = parsed_data.get('remedies')
         if not isinstance(remedies, list):
             parsed_data['remedies'] = [remedies] if remedies else []
-        
+            
         medicines = parsed_data.get('medicines')
         if not isinstance(medicines, list):
             parsed_data['medicines'] = [medicines] if medicines else []
@@ -229,7 +227,7 @@ json\s*(\{.*?\})\s*
         parsed_data.setdefault('why_happening_explanation', 'Not provided.')
         parsed_data.setdefault('immediate_action', 'Not provided.')
         parsed_data.setdefault('nurse_tips', 'Not provided.')
-
+        parsed_data.setdefault('citations', []) # NEW: Ensure citations field is always a list
 
         return parsed_data
     except json.JSONDecodeError as e:
@@ -243,7 +241,8 @@ json\s*(\{.*?\})\s*
             "nurse_tips": "It's important to provide clear and concise information for accurate analysis. Always seek medical advice from a qualified doctor.",
             "hipaa_disclaimer": "Disclaimer: I am a virtual AI assistant and not a medical doctor. This information is for educational purposes only and is not a substitute for professional medical advice. Always consult a qualified healthcare provider for diagnosis and treatment.",
             "urgency": "unknown", "suggested_doctor": "general",
-            "nursing_explanation": "Not provided.", "personal_notes": "Not provided.", "relevant_information": "Not provided."
+            "nursing_explanation": "Not provided.", "personal_notes": "Not provided.", "relevant_information": "Not provided.",
+            "citations": [] # Fallback also includes citations
         }
     except Exception as e:
         logger.error(f"Unexpected error in JSON parsing: {e}")
@@ -255,7 +254,8 @@ json\s*(\{.*?\})\s*
             "nurse_tips": "If issues persist, please contact support. Always seek medical advice from a qualified doctor.",
             "hipaa_disclaimer": "Disclaimer: I am a virtual AI assistant and not a medical doctor. This information is for educational purposes only and is not a substitute for professional medical advice. Always consult a qualified healthcare provider for diagnosis and treatment.",
             "urgency": "unknown", "suggested_doctor": "general",
-            "nursing_explanation": "Not provided.", "personal_notes": "Not provided.", "relevant_information": "Not provided."
+            "nursing_explanation": "Not provided.", "personal_notes": "Not provided.", "relevant_information": "Not provided.",
+            "citations": [] # Fallback also includes citations
         }
 
 @app.route('/api/doctors', methods=['GET'])
