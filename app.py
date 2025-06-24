@@ -788,74 +788,72 @@ def health():
 
 
 @app.route("/analyze", methods=["POST"])
+@token_required
+def analyze_symptoms(current_user):
+    try:
+        data = request.get_json()
 
-def analyze_symptoms():
+        if not data or 'symptoms' not in data:
+            return jsonify({'error': 'Missing symptoms'}), 400
 
-    auth_result = check_api_token()
+        symptoms = data.get("symptoms")
+        profile = data.get("profile", {})
+        location = data.get("location", {})
 
-    if auth_result:
+        # Build prompt from symptoms and profile
+        profile_context = build_profile_context(profile)
+        location_context = f"Patient location: {location.get('lat')}, {location.get('lng')}" if location else ""
 
-        return auth_result
+        prompt = f"""
+You are a medical assistant. A patient is reporting the following symptoms: "{symptoms}".
+{profile_context}
+{location_context}
 
+Based on this, provide:
+1. Likely medical analysis or condition.
+2. Possible remedy or advice.
+3. Urgency level (low, medium, high).
+4. Doctor specialty to consult (e.g., endocrinologist).
+Respond in JSON like this:
+{{
+  "medical_analysis": "...",
+  "remedy": "...",
+  "urgency": "...",
+  "suggested_doctor": "...",
+  "citations": [
+    {{"title": "Example Source", "url": "https://example.com"}}
+  ]
+}}
+"""
 
+        # Call OpenAI
+        openai_response = openai.ChatCompletion.create(
+            model="gpt-4",
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.5
+        )
 
-    try:
+        ai_text = openai_response.choices[0].message["content"]
 
-        data = request.get_json()
+        # Try parsing structured JSON from model response
+        import json
+        try:
+            result = json.loads(ai_text)
+        except Exception:
+            result = {
+                "medical_analysis": ai_text,
+                "remedy": "",
+                "urgency": "medium",
+                "suggested_doctor": "general physician",
+                "citations": []
+            }
 
-        symptoms = data.get('symptoms')
+        return jsonify(result)
 
-        profile_data = data.get('profile', {})
-
-        location = data.get('location')
-
-        language = data.get("language", "English")
-
-
-
-        if not symptoms:
-
-            return jsonify({'error': 'Symptoms required'}), 400
-
-
-
-        logger.info(f"[ANALYZE] Input: {symptoms}")
-
-        profile_context = build_profile_context(profile_data)
-
-        
-
-        # Use existing function to get OpenAI result
-
-        ai_response = generate_openai_response(symptoms, language, profile_context, prompt_type="symptoms")
-
-        result = parse_openai_json(ai_response)
-
-
-
-        # Optional: Add doctor suggestions
-
-        if location and result.get("suggested_doctor"):
-
-            result["nearby_doctors"] = get_nearby_doctors(result["suggested_doctor"], location)
-
-        else:
-
-            result["nearby_doctors"] = []
-
-
-
-        return jsonify(result), 200
-
-
-
-    except Exception as e:
-
-        logger.exception("Error in /analyze route")
-
-        return jsonify({'error': 'Failed to analyze symptoms'}), 500
-
-
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return jsonify({'error': f'Internal server error: {str(e)}'}), 500
 
 
 
