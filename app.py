@@ -6,7 +6,7 @@ import re
 from datetime import datetime
 from functools import wraps # Import functools for decorators
 
-from flask import Flask, request, jsonify, redirect, url_for
+from flask import Flask, request, jsonify, redirect, url_for, make_response # Import make_response for decorator
 from flask_cors import CORS, cross_origin # Ensure cross_origin is imported
 import openai
 import requests
@@ -32,7 +32,11 @@ API_AUTH_TOKEN = os.getenv("API_AUTH_TOKEN") # The secret token expected from fr
 
 # Supabase Project URL and Anon Key (from your frontend code)
 SUPABASE_URL = os.getenv("SUPABASE_URL", "https://nlfvwbjpeywcessqyqac.supabase.co")
-SUPABASE_ANON_KEY = os.getenv("SUPABASE_ANON_KEY", "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im5sZnZ3YmpwZXl3Y2Vzc3F5cWFjIiwiZnJlZSI6InRydWUiLCJpYXQiOjE3MDMxMzM2MDAsImV4cCI6MjAxODc5NzYwMH0.oR6tF9_B8_g0_f5_N3_g0_e0_w0_q0_w0_p0_s0_w0_s0")
+# IMPORTANT: Double-check this SUPABASE_ANON_KEY. The one in your traceback looks different from a valid anon key format.
+# It should be a long string starting with 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...'
+# Your previous snippet had: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im5sZnZ3YmpwZXl3Y2Vzc3F5cWFjIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NDU4NTczNjQsImV4cCI6MjA2MTQzMzM2NH0.zL84P7bK7qHxJt8MtkTPkqNe4U_K512ZgtpPvD9PoRI"
+# Which looked more correct.
+SUPABASE_ANON_KEY = os.getenv("SUPABASE_ANON_KEY", "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im5sZnZ3YmpwZXl3Y2Vzc3F5cWFjIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NDU4NTczNjQsImV4cCI6MjA2MTQzMzM2NH0.zL84P7bK7qHxJt8MtkTPkqNe4U_K512ZgtpPvD9PoRI")
 
 
 openai.api_key = OPENAI_API_KEY
@@ -44,19 +48,16 @@ def token_required(f):
         auth_header = request.headers.get("Authorization")
         if not auth_header or not auth_header.startswith("Bearer "):
             logger.warning(f"Unauthorized access attempt: No Bearer token provided or malformed header.")
-            return jsonify({"error": "Unauthorized: Bearer token missing or malformed"}), 401
+            return make_response(jsonify({"error": "Unauthorized: Bearer token missing or malformed"}), 401) # Use make_response
 
         token = auth_header.split(" ")[1] # Extract the token part
         if token != API_AUTH_TOKEN:
             logger.warning(f"Unauthorized access attempt: Invalid API token. Provided: {token}")
-            return jsonify({"error": "Unauthorized: Invalid API token"}), 401
+            return make_response(jsonify({"error": "Unauthorized: Invalid API token"}), 401) # Use make_response
         
         # In a real app, you'd verify the JWT token here and extract user_id.
-        # For now, we'll pass a dummy current_user or fetch it based on token.
-        # Assuming you'd have a way to get the user_id from the token,
-        # for this exercise, we can simulate it if needed, or pass None if current_user isn't used
-        # by the decorated function (like analyze_trends snippet implies it might be None)
-        current_user = {"id": "dummy_user_id"} # Replace with actual user ID from token validation
+        # For this example, we'll pass a dummy current_user.
+        current_user = {"id": "auth_user_id"} # Replace with actual user ID from token validation if available
         return f(current_user=current_user, *args, **kwargs)
     return decorated
 
@@ -70,14 +71,12 @@ def get_db_connection():
 def build_profile_context(profile_json):
     """Builds a human-readable context string from the user's profile data."""
     try:
-        # Ensure profile_json is treated as a dict if it comes as a string JSON
         profile = json.loads(profile_json) if isinstance(profile_json, str) else profile_json
     except Exception:
         logger.warning("Could not parse profile_json. Returning empty context.")
         return "No specific health profile provided by the user."
 
-    lines = ["**User's Health Profile Context:**"] # Added a clear header
-    # Add primary demographic info first
+    lines = ["**User's Health Profile Context:**"]
     if name := profile.get("name"):
         lines.append(f"- Name: {name}")
     if age := profile.get("age"):
@@ -108,7 +107,6 @@ def build_profile_context(profile_json):
         elif isinstance(known_diseases, str):
             lines.append("- Other Known Diseases: " + known_diseases)
 
-    # Added more specific lifestyle details, ensuring they are not empty strings if a boolean/null is passed
     if smoker := profile.get("smoker"):
         lines.append(f"- Smoker: {'Yes' if smoker is True else 'No' if smoker is False else str(smoker)}")
     if drinker := profile.get("drinker"):
@@ -118,13 +116,13 @@ def build_profile_context(profile_json):
             lines.append("- Exercise Habits: " + ", ".join(exercise_habits))
         elif isinstance(exercise_habits, str):
             lines.append("- Exercise Habits: " + exercise_habits)
-    if allergies := profile.get("allergies"): # Added allergies
+    if allergies := profile.get("allergies"):
         if isinstance(allergies, list):
             lines.append("- Allergies: " + ", ".join(allergies))
         elif isinstance(allergies, str):
             lines.append("- Allergies: " + allergies)
     
-    if len(lines) == 1: # Only the header is present, meaning no specific details
+    if len(lines) == 1:
         return "**User's Health Profile Context:** No specific health profile provided by the user."
         
     return "\n".join(lines)
@@ -216,18 +214,17 @@ def parse_openai_json(reply):
     """
     try:
         # Try to find a JSON block wrapped in markdown code fences first
+        # FIX: Ensure regex pattern is correctly formed as a multiline string
         match = re.search(r'```json\s*(\{.*?\})\s*```', reply, re.DOTALL)
         if match:
             json_str = match.group(1)
-            logger.info(f"Found JSON in markdown block: {json_str[:100]}...") # Log snippet for debugging
+            logger.info(f"Found JSON in markdown block: {json_str[:100]}...")
         else:
-            # If no markdown block, try to parse the whole reply as JSON
             json_str = reply
-            logger.info(f"Attempting to parse full reply as JSON: {json_str[:100]}...") # Log snippet for debugging
+            logger.info(f"Attempting to parse full reply as JSON: {json_str[:100]}...")
             
         parsed_data = json.loads(json_str)
 
-        # Ensure 'remedies' and 'medicines' are lists, even if AI returns strings or null
         remedies = parsed_data.get('remedies')
         if not isinstance(remedies, list):
             parsed_data['remedies'] = [remedies] if remedies else []
@@ -236,19 +233,17 @@ def parse_openai_json(reply):
         if not isinstance(medicines, list):
             parsed_data['medicines'] = [medicines] if medicines else []
 
-        # Add setdefault for new fields to ensure they always exist, even if AI misses them
         parsed_data.setdefault('nursing_explanation', 'Not provided.')
         parsed_data.setdefault('personal_notes', 'Not provided.')
         parsed_data.setdefault('relevant_information', 'Not provided.')
         parsed_data.setdefault('why_happening_explanation', 'Not provided.')
         parsed_data.setdefault('immediate_action', 'Not provided.')
         parsed_data.setdefault('nurse_tips', 'Not provided.')
-        parsed_data.setdefault('citations', []) # NEW: Ensure citations field is always a list
+        parsed_data.setdefault('citations', [])
 
         return parsed_data
     except json.JSONDecodeError as e:
         logger.error(f"JSON parsing failed: {e}. Raw reply: {reply}")
-        # Return a fallback structure to prevent frontend crash
         return {
             "medical_analysis": "I'm sorry, I couldn't fully process the request. Please try again or rephrase your symptoms. (JSON Parse Error)",
             "root_cause": "Parsing error or unclear AI response.",
@@ -258,7 +253,7 @@ def parse_openai_json(reply):
             "hipaa_disclaimer": "Disclaimer: I am a virtual AI assistant and not a medical doctor. This information is for educational purposes only and is not a substitute for professional medical advice. Always consult a qualified healthcare provider for diagnosis and treatment.",
             "urgency": "unknown", "suggested_doctor": "general",
             "nursing_explanation": "Not provided.", "personal_notes": "Not provided.", "relevant_information": "Not provided.",
-            "citations": [] # Fallback also includes citations
+            "citations": []
         }
     except Exception as e:
         logger.error(f"Unexpected error in JSON parsing: {e}")
@@ -271,19 +266,13 @@ def parse_openai_json(reply):
             "hipaa_disclaimer": "Disclaimer: I am a virtual AI assistant and not a medical doctor. This information is for educational purposes only and is not a substitute for professional medical advice. Always consult a qualified healthcare provider for diagnosis and treatment.",
             "urgency": "unknown", "suggested_doctor": "general",
             "nursing_explanation": "Not provided.", "personal_notes": "Not provided.", "relevant_information": "Not provided.",
-            "citations": [] # Fallback also includes citations
+            "citations": []
         }
 
 @app.route('/api/doctors', methods=['GET'])
-@cross_origin() # Allow cross-origin requests
-def doctors_api():
-    # Use the token_required decorator if you want this endpoint protected
-    # @token_required # If you uncomment this, ensure frontend sends token for doctor requests
-    # def doctors_api(current_user=None): # Adjust signature if using decorator
-    auth_result = token_required(lambda user: None)(None) # Manually call token_required check
-    if auth_result:
-        return auth_result
-    
+@cross_origin()
+@token_required # Apply the decorator directly
+def doctors_api(current_user=None): # Accept current_user
     try:
         lat = request.args.get('lat')
         lng = request.args.get('lng')
@@ -347,10 +336,8 @@ def get_nearby_doctors(specialty, location):
 
         doctors = []
         for place in sorted_results[:5]:
-            # Ensure safe access to nested keys like opening_hours
             open_now = place.get("opening_hours", {}).get("open_now", False)
             
-            # Using original maps.google.com for compatibility, ensuring full URL encoding
             place_name = place.get('name', '')
             place_vicinity = place.get('vicinity', '')
             query_string = requests.utils.quote(f"{place_name}, {place_vicinity}")
@@ -362,7 +349,7 @@ def get_nearby_doctors(specialty, location):
                 "address": place_vicinity,
                 "rating": place.get("rating"),
                 "open_now": open_now,
-                "phone": place.get("international_phone_number"), # Often available in details, not always nearby search
+                "phone": place.get("international_phone_number"),
                 "maps_link": maps_link
             })
         return doctors
@@ -429,12 +416,9 @@ def health():
     return jsonify({"status": "ok", "timestamp": datetime.now().isoformat()})
 
 @app.route("/analyze", methods=["POST"])
-@cross_origin() # Allow cross-origin requests
-def analyze_symptoms():
-    auth_result = token_required(lambda user: None)(None) # Manually call token_required check
-    if auth_result:
-        return auth_result
-
+@cross_origin()
+@token_required # Apply the decorator directly
+def analyze_symptoms(current_user=None): # Accept current_user
     try:
         data = request.get_json()
         symptoms = data.get('symptoms')
@@ -464,15 +448,100 @@ def analyze_symptoms():
     except Exception as e:
         logger.exception("Error in /analyze route")
         return jsonify({'error': 'Failed to analyze symptoms'}), 500
+        
+@app.route('/analyze-trends', methods=['POST'])
+@cross_origin()
+@token_required
+def analyze_trends(current_user=None):
+    try:
+        data = request.get_json()
 
+        symptoms = data.get("symptoms", [])
+        profile_context = data.get("profile_context", "")
+
+        if not symptoms or not isinstance(symptoms, list):
+            logger.error("Missing or invalid symptom data for trend analysis.")
+            return jsonify({"error": "Missing or invalid symptom data"}), 400
+        
+        trend_input = "User's Symptom Timeline:\n"
+        for entry in symptoms:
+            date = entry.get("date", "N/A")
+            issue = entry.get("issue", "N/A")
+            symptom = entry.get("symptom", "N/A")
+            severity = entry.get("severity", "N/A")
+            status = entry.get("status", "N/A")
+            trend_input += f"- Date: {date}, Issue: {issue}, Symptom: {symptom}, Severity: {severity}/10, Status: {status}\n"
+
+        prompt = f"""
+You are a medical AI assistant analyzing a user's symptom timeline to identify health trends.
+{profile_context}
+
+The user has logged the following symptoms over time:
+
+{trend_input}
+
+Please generate a concise and actionable health trend summary based on the provided timeline.
+The summary should be in 4-6 bullet points and adhere to the following:
+- Identify and describe **patterns or recurring symptoms** (e.g., "Headaches appearing every Tuesday").
+- Mention if the overall **condition seems to be improving, worsening, or remaining stable** based on severity and status.
+- **Suggest if medical attention is advised** (e.g., "Consult a doctor if symptoms persist").
+- Offer **AI-generated general tips** (e.g., "Ensure adequate hydration," "Prioritize consistent sleep," "Consider stress reduction techniques.").
+- Include **citations** (at least 1-2 credible sources like CDC, Mayo Clinic, WebMD) related to common trends or general health advice in the format: "Citations: [Title](URL), [Title](URL)". If no direct citation applies, state "No specific citations for trends."
+
+Example of desired output format for trends:
+- Pattern identified: ...
+- Trend observed: ...
+- Medical advice: ...
+- AI tips: ...
+Citations: [Title](URL), [Title](URL)
+"""
+
+        response = openai.ChatCompletion.create(
+            model="gpt-4o",
+            messages=[
+                {"role": "system", "content": "You are a helpful medical AI assistant summarizing health trends based on provided symptom timelines."},
+                {"role": "user", "content": prompt}
+            ],
+            temperature=0.7,
+            max_tokens=600
+        )
+
+        summary_text = response['choices'][0]['message']['content'].strip()
+
+        citations_match = re.search(r'Citations:\s*(.*)', summary_text, re.IGNORECASE)
+        citations_list = []
+        if citations_match:
+            citations_str = citations_match.group(1).strip()
+            summary_text = summary_text.replace(citations_match.group(0), "").strip()
+
+            if citations_str.lower() != "no specific citations for trends.":
+                link_pattern = re.compile(r'\[(.*?)\]\((.*?)\)')
+                for match in link_pattern.finditer(citations_str):
+                    citations_list.append({"title": match.group(1), "url": match.group(2)})
+        
+        if not citations_list:
+            citations_list.append({
+                "title": "General Health Trends & Wellness",
+                "url": "https://www.who.int/health-topics/health-and-wellness"
+            })
+
+
+        return jsonify({ 
+            "summary": summary_text,
+            "citations": citations_list
+        })
+
+    except openai.APIError as e:
+        logger.error(f"OpenAI API error in /analyze-trends: {e.status_code} - {e.response}")
+        return jsonify({"error": "AI trend analysis failed due to API error", "details": str(e.response)}), 500
+    except Exception as e:
+        logger.exception("AI trend summary error:")
+        return jsonify({"error": "Trend analysis failed", "details": str(e)}), 500
 
 @app.route("/api/ask", methods=["POST"])
-@cross_origin() # Allow cross-origin requests
-def ask():
-    auth_result = token_required(lambda user: None)(None) # Manually call token_required check
-    if auth_result:
-        return auth_result
-
+@cross_origin()
+@token_required # Apply the decorator directly
+def ask(current_user=None): # Accept current_user
     data = request.get_json()
     question = data.get("question", "")
     if not question:
@@ -480,14 +549,12 @@ def ask():
 
     logger.info(f"[ASK] Question: {question}")
     try:
-        # For general Q&A, gpt-3.5-turbo is often sufficient and faster/cheaper
         response = openai.ChatCompletion.create(
             model="gpt-3.5-turbo",
             messages=[{ "role": "user", "content": question }],
             temperature=0.5
         )
         reply = response["choices"][0]["message"]["content"]
-        # Consider adding citations for general questions as well if they offer medical advice
         return jsonify({ "reply": reply })
     except openai.APIError as e:
         logger.error(f"OpenAI API error in /ask: {e.status_code} - {e.response}")
@@ -497,12 +564,9 @@ def ask():
         return jsonify({ "error": "An unexpected error occurred" }), 500
 
 @app.route("/photo-analyze", methods=["POST"])
-@cross_origin() # Allow cross-origin requests
-def analyze_photo():
-    auth_result = token_required(lambda user: None)(None) # Manually call token_required check
-    if auth_result:
-        return auth_result
-
+@cross_origin()
+@token_required # Apply the decorator directly
+def analyze_photo(current_user=None): # Accept current_user
     data = request.get_json()
     image_base64 = data.get("image_base64")
     profile_data = data.get("profile", {})
@@ -540,12 +604,9 @@ def analyze_photo():
     return jsonify(parsed_analysis)
 
 @app.route("/analyze-lab-report", methods=["POST"])
-@cross_origin() # Allow cross-origin requests
-def analyze_lab_report():
-    auth_result = token_required(lambda user: None)(None) # Manually call token_required check
-    if auth_result:
-        return auth_result
-
+@cross_origin()
+@token_required # Apply the decorator directly
+def analyze_lab_report(current_user=None): # Accept current_user
     data = request.get_json()
     image_base64 = data.get("image_base64")
     extracted_text_from_frontend = data.get("extracted_text", "")
@@ -586,34 +647,29 @@ def analyze_lab_report():
     
 
 @app.route('/api/history', methods=['POST'])
-@cross_origin() # Allow cross-origin requests
-def save_history():
-    auth_result = token_required(lambda user: None)(None) # Manually call token_required check
-    if auth_result:
-        return auth_result
-
+@cross_origin()
+@token_required # Apply the decorator directly
+def save_history(current_user=None): # Accept current_user
     try:
         data = request.get_json()
         user_id = data.get('user_id')
         query = data.get('query')
-        response = data.get('response') # This is the full AI response object
+        response = data.get('response')
 
         if not user_id or not query or not response:
             return jsonify({"error": "Missing user_id, query, or response"}), 400
 
-        # Ensure response is a dict; parse if it's a stringified JSON (though it should be dict now)
         parsed_response = response if isinstance(response, dict) else json.loads(response)
 
-        # 🔒 Safe conversion to arrays for Supabase and ensure citations are handled
         medicines = parsed_response.get("medicines")
         remedies = parsed_response.get("remedies")
-        citations = parsed_response.get("citations") # NEW: Get citations
+        citations = parsed_response.get("citations")
 
         if not isinstance(medicines, list):
             medicines = [medicines] if medicines else []
         if not isinstance(remedies, list):
             remedies = [remedies] if remedies else []
-        if not isinstance(citations, list): # NEW: Ensure citations is a list
+        if not isinstance(citations, list):
             citations = [citations] if citations else []
 
         payload = {
@@ -626,20 +682,18 @@ def save_history():
             "urgency": parsed_response.get("urgency"),
             "medicines": medicines,
             "suggested_doctor": parsed_response.get("suggested_doctor"),
-            "raw_text": json.dumps(parsed_response), # Save the full JSON response, including new fields
+            "raw_text": json.dumps(parsed_response),
             "timestamp": datetime.utcnow().isoformat(),
-            # NEW fields to save to Supabase history table if your schema supports them
             "nursing_explanation": parsed_response.get("nursing_explanation"),
             "personal_notes": parsed_response.get("personal_notes"),
             "relevant_information": parsed_response.get("relevant_information"),
             "why_happening_explanation": parsed_response.get("why_happening_explanation"),
             "immediate_action": parsed_response.get("immediate_action"),
             "nurse_tips": parsed_response.get("nurse_tips"),
-            "citations": citations # NEW: Save citations
+            "citations": citations
         }
 
         logger.info(f"Saving history for user_id: {user_id}")
-        # logger.info(f"Payload: {json.dumps(payload, indent=2)}") # Uncomment for detailed payload logging
 
         supabase_url = f"{SUPABASE_URL}/rest/v1/history"
         headers = {
@@ -662,12 +716,9 @@ def save_history():
 
 
 @app.route('/api/history', methods=['GET'])
-@cross_origin() # Allow cross-origin requests
-def get_history():
-    auth_result = token_required(lambda user: None)(None) # Manually call token_required check
-    if auth_result:
-        return auth_result
-
+@cross_origin()
+@token_required # Apply the decorator directly
+def get_history(current_user=None): # Accept current_user
     user_id = request.args.get('user_id')
     if not user_id:
         return jsonify({"error": "Missing user_id"}), 400
@@ -685,24 +736,19 @@ def get_history():
             logger.error(f"Supabase fetch error: {response.text}")
             return jsonify({"error": "Failed to fetch history", "details": response.text}), 500
 
-        # Parse 'raw_text' back into a dictionary for frontend if it's stored as JSON string
         history_data = response.json()
         for entry in history_data:
             if 'raw_text' in entry and isinstance(entry['raw_text'], str):
                 try:
-                    # Attempt to parse raw_text into a dictionary
                     entry['response'] = json.loads(entry['raw_text'])
-                    # Ensure citations are lists when retrieved for consistency
                     if 'citations' in entry['response'] and not isinstance(entry['response']['citations'], list):
                         entry['response']['citations'] = [entry['response']['citations']]
                 except json.JSONDecodeError:
                     logger.warning(f"Failed to parse raw_text for history entry {entry.get('id')}")
-                    entry['response'] = {} # Fallback to empty dict
+                    entry['response'] = {}
             else:
-                # If raw_text is missing or not string, ensure 'response' key still exists
                 entry['response'] = entry.get('response', {}) 
             
-            # Ensure top-level citations (if your table has it) are arrays
             if 'citations' in entry and not isinstance(entry['citations'], list):
                 entry['citations'] = [entry['citations']]
 
@@ -716,12 +762,9 @@ def get_history():
 # --- NEW PASSWORD RESET ENDPOINTS ---
 
 @app.route("/request-password-reset", methods=["POST"])
-@cross_origin() # Allow cross-origin requests
-def request_password_reset():
-    auth_result = token_required(lambda user: None)(None) # Manually call token_required check
-    if auth_result:
-        return auth_result
-
+@cross_origin()
+@token_required # Apply the decorator directly
+def request_password_reset(current_user=None): # Accept current_user
     data = request.get_json()
     email = data.get("email")
     frontend_redirect_url = data.get("redirect_to")
@@ -759,7 +802,10 @@ def request_password_reset():
 
 
 @app.route("/verify-password-reset", methods=["GET"])
-@cross_origin() # Allow cross-origin requests
+@cross_origin()
+# This endpoint typically doesn't need @token_required as it's the target of an external email link
+# and acts as a redirector. If you apply @token_required, then the external email link won't work
+# because it won't send an Authorization header.
 def verify_password_reset():
     """
     This endpoint is designed to be the 'redirectTo' target from Supabase's email link.
@@ -776,102 +822,6 @@ def verify_password_reset():
     else:
         logger.warning("Missing access_token or refresh_token in /verify-password-reset. Redirecting to error.")
         return redirect("https://askdocapp-92cc3.web.app/reset-password.html?error=invalid_link")
-
-
-# --- NEW ANALYZE TRENDS ENDPOINT ---
-@app.route('/analyze-trends', methods=['POST'])
-@cross_origin() # Allow cross-origin requests
-@token_required
-def analyze_trends(current_user=None): # current_user will be passed by the token_required decorator
-    try:
-        data = request.get_json()
-
-        symptoms = data.get("symptoms", []) # This should be a list of symptom log entries
-        profile_context = data.get("profile_context", "") # This should be a pre-built string or dict
-
-        if not symptoms or not isinstance(symptoms, list):
-            logger.error("Missing or invalid symptom data for trend analysis.")
-            return jsonify({"error": "Missing or invalid symptom data"}), 400
-        
-        # Build the trend input string for the LLM
-        trend_input = "User's Symptom Timeline:\n"
-        for entry in symptoms:
-            date = entry.get("date", "N/A")
-            issue = entry.get("issue", "N/A")
-            symptom = entry.get("symptom", "N/A")
-            severity = entry.get("severity", "N/A")
-            status = entry.get("status", "N/A")
-            trend_input += f"- Date: {date}, Issue: {issue}, Symptom: {symptom}, Severity: {severity}/10, Status: {status}\n"
-
-        prompt = f"""
-You are a medical AI assistant analyzing a user's symptom timeline to identify health trends.
-{profile_context}
-
-The user has logged the following symptoms over time:
-
-{trend_input}
-
-Please generate a concise and actionable health trend summary based on the provided timeline.
-The summary should be in 4-6 bullet points and adhere to the following:
-- Identify and describe **patterns or recurring symptoms** (e.g., "Headaches appearing every Tuesday").
-- Mention if the overall **condition seems to be improving, worsening, or remaining stable** based on severity and status.
-- **Suggest if medical attention is advised** (e.g., "Consult a doctor if symptoms persist").
-- Offer **AI-generated general tips** (e.g., "Ensure adequate hydration," "Prioritize consistent sleep," "Consider stress reduction techniques.").
-- Include **citations** (at least 1-2 credible sources like CDC, Mayo Clinic, WebMD) related to common trends or general health advice in the format: "Citations: [Title](URL), [Title](URL)". If no direct citation applies, state "No specific citations for trends."
-
-Example of desired output format for trends:
-- Pattern identified: ...
-- Trend observed: ...
-- Medical advice: ...
-- AI tips: ...
-Citations: [Title](URL), [Title](URL)
-"""
-
-        response = openai.ChatCompletion.create(
-            model="gpt-4o", # Use gpt-4o for better performance and instruction following
-            messages=[
-                {"role": "system", "content": "You are a helpful medical AI assistant summarizing health trends based on provided symptom timelines."},
-                {"role": "user", "content": prompt}
-            ],
-            temperature=0.7,
-            max_tokens=600
-        )
-
-        summary_text = response['choices'][0]['message']['content'].strip()
-
-        # Extract citations from the summary_text
-        citations_match = re.search(r'Citations:\s*(.*)', summary_text, re.IGNORECASE)
-        citations_list = []
-        if citations_match:
-            citations_str = citations_match.group(1).strip()
-            # Remove the citations line from the summary text
-            summary_text = summary_text.replace(citations_match.group(0), "").strip()
-
-            if citations_str.lower() != "no specific citations for trends.":
-                # Regex to find [Title](URL) patterns
-                link_pattern = re.compile(r'\[(.*?)\]\((.*?)\)')
-                for match in link_pattern.finditer(citations_str):
-                    citations_list.append({"title": match.group(1), "url": match.group(2)})
-        
-        # Add a default citation if citations_list is empty, to cover the guideline
-        if not citations_list:
-            citations_list.append({
-                "title": "General Health Trends & Wellness",
-                "url": "https://www.who.int/health-topics/health-and-wellness" # Example generic URL
-            })
-
-
-        return jsonify({ 
-            "summary": summary_text,
-            "citations": citations_list # Return citations as a list of objects
-        })
-
-    except openai.APIError as e:
-        logger.error(f"OpenAI API error in /analyze-trends: {e.status_code} - {e.response}")
-        return jsonify({"error": "AI trend analysis failed due to API error", "details": str(e.response)}), 500
-    except Exception as e:
-        logger.exception("AI trend summary error:") # Logs full traceback
-        return jsonify({"error": "Trend analysis failed", "details": str(e)}), 500
 
 
 if __name__ == '__main__':
