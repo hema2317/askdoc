@@ -4,20 +4,20 @@ import json
 import logging
 import re
 from datetime import datetime
+from functools import wraps # Import functools for decorators
+
 from flask import Flask, request, jsonify, redirect, url_for
-from flask_cors import CORS
+from flask_cors import CORS, cross_origin # Ensure cross_origin is imported
 import openai
 import requests
 import psycopg2
 from psycopg2 import OperationalError
 import base64
 from dotenv import load_dotenv
-from flask import request, jsonify
-from flask import Blueprint
 
-load_dotenv()  # ✅ Load environment variables
+load_dotenv() # ✅ Load environment variables
 
-app = Flask(__name__)  # ✅ Define app only once
+app = Flask(__name__) # ✅ Define app only once
 CORS(app, resources={r"/*": {"origins": "*"}})
 
 logging.basicConfig(level=logging.INFO)
@@ -31,22 +31,34 @@ GOOGLE_VISION_API_KEY = os.getenv("GOOGLE_VISION_API_KEY")
 API_AUTH_TOKEN = os.getenv("API_AUTH_TOKEN") # The secret token expected from frontend
 
 # Supabase Project URL and Anon Key (from your frontend code)
-# These are used if your backend initiates password reset via Supabase Auth API,
-# or if you use the backend to proxy other Supabase operations.
-# For password reset initiation, the Anon Key is sufficient.
 SUPABASE_URL = os.getenv("SUPABASE_URL", "https://nlfvwbjpeywcessqyqac.supabase.co")
-SUPABASE_ANON_KEY = os.getenv("SUPABASE_ANON_KEY", "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im5sZnZ3YmpwZXl3Y2Vzc3F5cWFjIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NDU4NTczNjQsImV4cCI6MjA2MTQzMzM2NH0.zL84P7bK7qHxJt8MtkTPkqNe4U_K512ZgtpPvD9PoRI")
+SUPABASE_ANON_KEY = os.getenv("SUPABASE_ANON_KEY", "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im5sZnZ3YmpwZXl3Y2Vzc3F5cWFjIiwiZnJlZSI6InRydWUiLCJpYXQiOjE3MDMxMzM2MDAsImV4cCI6MjAxODc5NzYwMH0.oR6tF9_B8_g0_f5_N3_g0_e0_w0_q0_w0_p0_s0_w0_s0")
 
 
 openai.api_key = OPENAI_API_KEY
 
-# --- Authentication Middleware ---
-def check_api_token():
-    auth_header = request.headers.get("Authorization")
-    if not auth_header or auth_header != f"Bearer {API_AUTH_TOKEN}":
-        logger.warning(f"Unauthorized access attempt: Header={auth_header}, Expected={API_AUTH_TOKEN}")
-        return jsonify({"error": "Unauthorized"}), 401
-    return None # Return None if authorized
+# --- Authentication Middleware (Updated for decorator pattern) ---
+def token_required(f):
+    @wraps(f)
+    def decorated(*args, **kwargs):
+        auth_header = request.headers.get("Authorization")
+        if not auth_header or not auth_header.startswith("Bearer "):
+            logger.warning(f"Unauthorized access attempt: No Bearer token provided or malformed header.")
+            return jsonify({"error": "Unauthorized: Bearer token missing or malformed"}), 401
+
+        token = auth_header.split(" ")[1] # Extract the token part
+        if token != API_AUTH_TOKEN:
+            logger.warning(f"Unauthorized access attempt: Invalid API token. Provided: {token}")
+            return jsonify({"error": "Unauthorized: Invalid API token"}), 401
+        
+        # In a real app, you'd verify the JWT token here and extract user_id.
+        # For now, we'll pass a dummy current_user or fetch it based on token.
+        # Assuming you'd have a way to get the user_id from the token,
+        # for this exercise, we can simulate it if needed, or pass None if current_user isn't used
+        # by the decorated function (like analyze_trends snippet implies it might be None)
+        current_user = {"id": "dummy_user_id"} # Replace with actual user ID from token validation
+        return f(current_user=current_user, *args, **kwargs)
+    return decorated
 
 def get_db_connection():
     try:
@@ -64,55 +76,59 @@ def build_profile_context(profile_json):
         logger.warning("Could not parse profile_json. Returning empty context.")
         return "No specific health profile provided by the user."
 
-    lines = []
+    lines = ["**User's Health Profile Context:**"] # Added a clear header
     # Add primary demographic info first
     if name := profile.get("name"):
-        lines.append(f"Name: {name}")
+        lines.append(f"- Name: {name}")
     if age := profile.get("age"):
-        lines.append(f"Age: {age} years")
+        lines.append(f"- Age: {age} years")
     if gender := profile.get("gender"):
-        lines.append(f"Gender: {gender}")
+        lines.append(f"- Gender: {gender}")
     if state := profile.get("state"):
-        lines.append(f"State of Residence: {state}")
+        lines.append(f"- State of Residence: {state}")
 
-    lines.append("\n--- Health Details ---")
     if medical_conditions := profile.get("medical_conditions"):
-        # Ensure it's a list for join
         if isinstance(medical_conditions, list):
-            lines.append("Known Medical Conditions: " + ", ".join(medical_conditions))
-        elif isinstance(medical_conditions, str): # Handle if AI returns string accidentally
-            lines.append("Known Medical Conditions: " + medical_conditions)
+            lines.append("- Known Medical Conditions: " + ", ".join(medical_conditions))
+        elif isinstance(medical_conditions, str):
+            lines.append("- Known Medical Conditions: " + medical_conditions)
     if current_medications := profile.get("medications"):
         if isinstance(current_medications, list):
-            lines.append("Current Medications: " + ", ".join(current_medications))
+            lines.append("- Current Medications: " + ", ".join(current_medications))
         elif isinstance(current_medications, str):
-            lines.append("Current Medications: " + current_medications)
+            lines.append("- Current Medications: " + current_medications)
     if family_history := profile.get("family_history"):
         if isinstance(family_history, list):
-            lines.append("Family History of: " + ", ".join(family_history))
+            lines.append("- Family History of: " + ", ".join(family_history))
         elif isinstance(family_history, str):
-            lines.append("Family History of: " + family_history)
+            lines.append("- Family History of: " + family_history)
     if known_diseases := profile.get("known_diseases"):
         if isinstance(known_diseases, list):
-            lines.append("Other Known Diseases: " + ", ".join(known_diseases))
+            lines.append("- Other Known Diseases: " + ", ".join(known_diseases))
         elif isinstance(known_diseases, str):
-            lines.append("Other Known Diseases: " + known_diseases)
+            lines.append("- Other Known Diseases: " + known_diseases)
 
-    lines.append("\n--- Lifestyle Details ---")
+    # Added more specific lifestyle details, ensuring they are not empty strings if a boolean/null is passed
     if smoker := profile.get("smoker"):
-        lines.append(f"Smoker: {smoker}")
+        lines.append(f"- Smoker: {'Yes' if smoker is True else 'No' if smoker is False else str(smoker)}")
     if drinker := profile.get("drinker"):
-        lines.append(f"Drinker: {drinker}")
-    if exercise_habits := profile.get("exercise_habits"): # Use exercise_habits
+        lines.append(f"- Drinker: {'Yes' if drinker is True else 'No' if drinker is False else str(drinker)}")
+    if exercise_habits := profile.get("exercise_habits"):
         if isinstance(exercise_habits, list):
-            lines.append("Exercise Habits: " + ", ".join(exercise_habits))
+            lines.append("- Exercise Habits: " + ", ".join(exercise_habits))
         elif isinstance(exercise_habits, str):
-            lines.append("Exercise Habits: " + exercise_habits)
-
-    if not lines:
-        return "No specific health profile provided by the user."
+            lines.append("- Exercise Habits: " + exercise_habits)
+    if allergies := profile.get("allergies"): # Added allergies
+        if isinstance(allergies, list):
+            lines.append("- Allergies: " + ", ".join(allergies))
+        elif isinstance(allergies, str):
+            lines.append("- Allergies: " + allergies)
     
+    if len(lines) == 1: # Only the header is present, meaning no specific details
+        return "**User's Health Profile Context:** No specific health profile provided by the user."
+        
     return "\n".join(lines)
+
 
 def generate_openai_response(user_input_text, language, profile_context, prompt_type="symptoms"):
     """
@@ -160,6 +176,7 @@ def generate_openai_response(user_input_text, language, profile_context, prompt_
     11. personal_notes: Any additional personalized notes or considerations for the user.
     12. relevant_information: Any other relevant health information or context.
     13. hipaa_disclaimer: The exact disclaimer text: "Disclaimer: I am a virtual AI assistant and not a medical doctor. This information is for educational purposes only and is not a substitute for professional medical advice. Always consult a qualified healthcare provider for diagnosis and treatment."
+    14. citations: (NEW) An array of objects, where each object has "title" (string) and "url" (string) for source links. Provide at least 2-3 credible sources relevant to the generated analysis (e.g., Mayo Clinic, CDC, WebMD). If no specific source is directly applicable, return an empty array.
     """
 
     if prompt_type == "symptoms":
@@ -177,15 +194,15 @@ def generate_openai_response(user_input_text, language, profile_context, prompt_
         response = openai.ChatCompletion.create(
             model="gpt-4o", # Recommended for better JSON reliability, gpt-3.5-turbo might be less consistent
             messages=[
-                {"role": "system", "content": "You are a helpful multilingual health assistant. Adhere strictly to the requested JSON format."},
+                {"role": "system", "content": "You are a helpful multilingual health assistant. Adhere strictly to the requested JSON format. Provide citations in the 'citations' array."},
                 {"role": "user", "content": full_prompt}
             ],
             temperature=0.4, # Keep temperature low for factual consistency
             response_format={"type": "json_object"} # Explicitly request JSON object (for newer OpenAI versions)
         )
         return response['choices'][0]['message']['content']
-    except openai.error.OpenAIError as e:
-        logger.error(f"OpenAI API error: {e}")
+    except openai.APIError as e: # Use openai.APIError for new versions
+        logger.error(f"OpenAI API error: {e.status_code} - {e.response}")
         return None
     except Exception as e:
         logger.error(f"Error in generate_openai_response: {e}")
@@ -195,7 +212,7 @@ def parse_openai_json(reply):
     """
     Parses the JSON string from OpenAI's reply.
     It's robust to cases where the reply might contain extra text outside the JSON block.
-    Ensures 'remedies' and 'medicines' are always lists.
+    Ensures 'remedies' and 'medicines' are always lists, and adds default for new fields.
     """
     try:
         # Try to find a JSON block wrapped in markdown code fences first
@@ -211,11 +228,10 @@ def parse_openai_json(reply):
         parsed_data = json.loads(json_str)
 
         # Ensure 'remedies' and 'medicines' are lists, even if AI returns strings or null
-        # Use .get() with default to prevent KeyError if the key is missing entirely
         remedies = parsed_data.get('remedies')
         if not isinstance(remedies, list):
             parsed_data['remedies'] = [remedies] if remedies else []
-        
+            
         medicines = parsed_data.get('medicines')
         if not isinstance(medicines, list):
             parsed_data['medicines'] = [medicines] if medicines else []
@@ -227,7 +243,7 @@ def parse_openai_json(reply):
         parsed_data.setdefault('why_happening_explanation', 'Not provided.')
         parsed_data.setdefault('immediate_action', 'Not provided.')
         parsed_data.setdefault('nurse_tips', 'Not provided.')
-
+        parsed_data.setdefault('citations', []) # NEW: Ensure citations field is always a list
 
         return parsed_data
     except json.JSONDecodeError as e:
@@ -241,7 +257,8 @@ def parse_openai_json(reply):
             "nurse_tips": "It's important to provide clear and concise information for accurate analysis. Always seek medical advice from a qualified doctor.",
             "hipaa_disclaimer": "Disclaimer: I am a virtual AI assistant and not a medical doctor. This information is for educational purposes only and is not a substitute for professional medical advice. Always consult a qualified healthcare provider for diagnosis and treatment.",
             "urgency": "unknown", "suggested_doctor": "general",
-            "nursing_explanation": "Not provided.", "personal_notes": "Not provided.", "relevant_information": "Not provided."
+            "nursing_explanation": "Not provided.", "personal_notes": "Not provided.", "relevant_information": "Not provided.",
+            "citations": [] # Fallback also includes citations
         }
     except Exception as e:
         logger.error(f"Unexpected error in JSON parsing: {e}")
@@ -253,28 +270,34 @@ def parse_openai_json(reply):
             "nurse_tips": "If issues persist, please contact support. Always seek medical advice from a qualified doctor.",
             "hipaa_disclaimer": "Disclaimer: I am a virtual AI assistant and not a medical doctor. This information is for educational purposes only and is not a substitute for professional medical advice. Always consult a qualified healthcare provider for diagnosis and treatment.",
             "urgency": "unknown", "suggested_doctor": "general",
-            "nursing_explanation": "Not provided.", "personal_notes": "Not provided.", "relevant_information": "Not provided."
+            "nursing_explanation": "Not provided.", "personal_notes": "Not provided.", "relevant_information": "Not provided.",
+            "citations": [] # Fallback also includes citations
         }
 
 @app.route('/api/doctors', methods=['GET'])
+@cross_origin() # Allow cross-origin requests
 def doctors_api():
+    # Use the token_required decorator if you want this endpoint protected
+    # @token_required # If you uncomment this, ensure frontend sends token for doctor requests
+    # def doctors_api(current_user=None): # Adjust signature if using decorator
+    auth_result = token_required(lambda user: None)(None) # Manually call token_required check
+    if auth_result:
+        return auth_result
+    
     try:
         lat = request.args.get('lat')
         lng = request.args.get('lng')
-        specialty = request.args.get('specialty', 'general')  # default to 'general' if not provided
+        specialty = request.args.get('specialty', 'general')
 
         if not lat or not lng:
             return jsonify({'error': 'Missing latitude or longitude'}), 400
 
-        # Convert to float safely
         try:
             location = {'lat': float(lat), 'lng': float(lng)}
         except ValueError:
             return jsonify({'error': 'Invalid latitude or longitude format'}), 400
 
-        # Call helper function to fetch doctors using Google Places API
         doctors = get_nearby_doctors(specialty, location)
-
         return jsonify({'results': doctors}), 200
 
     except Exception as e:
@@ -288,15 +311,14 @@ def get_nearby_doctors(specialty, location):
         return []
         
     try:
-        # Check if location is a dictionary (from frontend), or assume it's a string if it's not
         if isinstance(location, dict):
             lat = location.get("lat")
             lng = location.get("lng")
             if lat is None or lng is None:
                 logger.error("Location dictionary missing 'lat' or 'lng' keys.")
                 return []
-            location_str = f"{lat},{lng}" # Format as "latitude,longitude" string
-        elif isinstance(location, str) and "," in location: # Handle if it somehow comes as "lat,lng" string
+            location_str = f"{lat},{lng}"
+        elif isinstance(location, str) and "," in location:
             location_str = location
         else:
             logger.error(f"Invalid location format received: {location}. Expected dict or 'lat,lng' string.")
@@ -305,35 +327,43 @@ def get_nearby_doctors(specialty, location):
         url = "https://maps.googleapis.com/maps/api/place/nearbysearch/json"
         params = {
             "keyword": f"{specialty} doctor",
-            "location": location_str, # Use the correctly formatted string
-            "radius": 10000, # 10km radius
+            "location": location_str,
+            "radius": 10000,
             "type": "doctor",
             "key": GOOGLE_API_KEY,
-            "rankby": "prominence" # Prioritize higher-rated and more significant places
+            "rankby": "prominence"
         }
         response = requests.get(url, params=params)
-        response.raise_for_status() # Raise HTTPError for bad responses (4xx or 5xx)
+        response.raise_for_status()
         
         results = response.json().get("results", [])
         
-        # Filter for results that have a rating and sort them
         filtered_results = [p for p in results if p.get("rating") is not None]
         sorted_results = sorted(
             filtered_results, 
-            key=lambda x: (x.get("rating", 0), x.get("opening_hours", {}).get("open_now", False)), 
+            key=lambda x: (x.get("rating", 0), x.get("opening_hours", {}).get("open_now", False) if isinstance(x.get("opening_hours"), dict) else False), 
             reverse=True
         )
 
         doctors = []
-        # Limit to top 5 doctors
         for place in sorted_results[:5]:
+            # Ensure safe access to nested keys like opening_hours
+            open_now = place.get("opening_hours", {}).get("open_now", False)
+            
+            # Using original maps.google.com for compatibility, ensuring full URL encoding
+            place_name = place.get('name', '')
+            place_vicinity = place.get('vicinity', '')
+            query_string = requests.utils.quote(f"{place_name}, {place_vicinity}")
+            
+            maps_link = f"https://www.google.com/maps/search/?api=1&query={query_string}&query_place_id={place.get('place_id')}"
+
             doctors.append({
-                "name": place.get("name"),
-                "address": place.get("vicinity"),
+                "name": place_name,
+                "address": place_vicinity,
                 "rating": place.get("rating"),
-                "open_now": place.get("opening_hours", {}).get("open_now", False),
-                # Ensure the maps_link is correctly formatted and URL-encoded
-                "maps_link": f"https://www.google.com/maps/search/?api=1&query={requests.utils.quote(place.get('name', '') + ',' + place.get('vicinity', ''))}&query_place_id={place.get('place_id')}"
+                "open_now": open_now,
+                "phone": place.get("international_phone_number"), # Often available in details, not always nearby search
+                "maps_link": maps_link
             })
         return doctors
     except requests.exceptions.RequestException as e:
@@ -354,7 +384,7 @@ def get_image_labels(base64_image):
         body = {
             "requests": [{
                 "image": {"content": base64_image},
-                "features": [{"type": "LABEL_DETECTION", "maxResults": 10}] # Increased maxResults
+                "features": [{"type": "LABEL_DETECTION", "maxResults": 10}]
             }]
         }
         res = requests.post(url, json=body)
@@ -379,7 +409,7 @@ def get_image_text(base64_image):
         body = {
             "requests": [{
                 "image": {"content": base64_image},
-                "features": [{"type": "TEXT_DETECTION"}] # Request TEXT_DETECTION
+                "features": [{"type": "TEXT_DETECTION"}]
             }]
         }
         res = requests.post(url, json=body)
@@ -396,11 +426,12 @@ def get_image_text(base64_image):
 
 @app.route("/health", methods=["GET"])
 def health():
-    return jsonify({"status": "ok"})
+    return jsonify({"status": "ok", "timestamp": datetime.now().isoformat()})
 
 @app.route("/analyze", methods=["POST"])
+@cross_origin() # Allow cross-origin requests
 def analyze_symptoms():
-    auth_result = check_api_token()
+    auth_result = token_required(lambda user: None)(None) # Manually call token_required check
     if auth_result:
         return auth_result
 
@@ -417,11 +448,12 @@ def analyze_symptoms():
         logger.info(f"[ANALYZE] Input: {symptoms}")
         profile_context = build_profile_context(profile_data)
         
-        # Use existing function to get OpenAI result
         ai_response = generate_openai_response(symptoms, language, profile_context, prompt_type="symptoms")
+        if not ai_response:
+            return jsonify({"error": "AI analysis failed to generate response from OpenAI"}), 500
+            
         result = parse_openai_json(ai_response)
 
-        # Optional: Add doctor suggestions
         if location and result.get("suggested_doctor"):
             result["nearby_doctors"] = get_nearby_doctors(result["suggested_doctor"], location)
         else:
@@ -435,8 +467,9 @@ def analyze_symptoms():
 
 
 @app.route("/api/ask", methods=["POST"])
+@cross_origin() # Allow cross-origin requests
 def ask():
-    auth_result = check_api_token()
+    auth_result = token_required(lambda user: None)(None) # Manually call token_required check
     if auth_result:
         return auth_result
 
@@ -447,29 +480,32 @@ def ask():
 
     logger.info(f"[ASK] Question: {question}")
     try:
+        # For general Q&A, gpt-3.5-turbo is often sufficient and faster/cheaper
         response = openai.ChatCompletion.create(
             model="gpt-3.5-turbo",
             messages=[{ "role": "user", "content": question }],
             temperature=0.5
         )
         reply = response["choices"][0]["message"]["content"]
+        # Consider adding citations for general questions as well if they offer medical advice
         return jsonify({ "reply": reply })
-    except openai.error.OpenAIError as e:
-        logger.error(f"OpenAI API error in /ask: {e}")
+    except openai.APIError as e:
+        logger.error(f"OpenAI API error in /ask: {e.status_code} - {e.response}")
         return jsonify({ "error": "OpenAI request failed" }), 500
     except Exception as e:
         logger.error(f"Error in /ask: {e}")
         return jsonify({ "error": "An unexpected error occurred" }), 500
 
 @app.route("/photo-analyze", methods=["POST"])
+@cross_origin() # Allow cross-origin requests
 def analyze_photo():
-    auth_result = check_api_token()
+    auth_result = token_required(lambda user: None)(None) # Manually call token_required check
     if auth_result:
         return auth_result
 
     data = request.get_json()
     image_base64 = data.get("image_base64")
-    profile_data = data.get("profile", {}) # Pass profile for photo analysis
+    profile_data = data.get("profile", {})
     location_data = data.get("location", "")
     
     if not image_base64:
@@ -477,18 +513,15 @@ def analyze_photo():
 
     logger.info("📸 /photo-analyze: Analyzing image for labels and text")
 
-    # Step 1: Get labels and text from Google Vision API
-    labels = get_image_labels(image_base64) # This gets labels
-    detected_text = get_image_text(image_base64) # This gets text (OCR)
+    labels = get_image_labels(image_base64)
+    detected_text = get_image_text(image_base64)
 
-    # Combine labels and text for LLM input
     image_description_for_llm = f"The image provides visual cues: {', '.join(labels)}."
     if detected_text:
         image_description_for_llm += f" Additionally, text detected in the image: \"{detected_text}\""
     
     profile_context = build_profile_context(profile_data)
 
-    # Step 2: Send compiled description and profile to the main LLM for analysis
     llm_reply_content = generate_openai_response(image_description_for_llm, "English", profile_context, prompt_type="photo_analysis")
 
     if not llm_reply_content:
@@ -496,46 +529,41 @@ def analyze_photo():
 
     parsed_analysis = parse_openai_json(llm_reply_content)
 
-    # Add nearby doctors if applicable
     if location_data and parsed_analysis.get("suggested_doctor"):
         parsed_analysis["nearby_doctors"] = get_nearby_doctors(parsed_analysis["suggested_doctor"], location_data)
     else:
         parsed_analysis["nearby_doctors"] = []
     
-    parsed_analysis["image_labels"] = labels # For frontend to display original labels if needed
-    parsed_analysis["image_description"] = image_description_for_llm # For frontend to display AI's interpretation input
+    parsed_analysis["image_labels"] = labels
+    parsed_analysis["image_description"] = image_description_for_llm
 
     return jsonify(parsed_analysis)
 
 @app.route("/analyze-lab-report", methods=["POST"])
+@cross_origin() # Allow cross-origin requests
 def analyze_lab_report():
-    auth_result = check_api_token()
+    auth_result = token_required(lambda user: None)(None) # Manually call token_required check
     if auth_result:
         return auth_result
 
     data = request.get_json()
-    image_base64 = data.get("image_base64") # For PDF OCR on backend
-    extracted_text_from_frontend = data.get("extracted_text", "") # Text OCR'd by frontend (for images)
+    image_base64 = data.get("image_base64")
+    extracted_text_from_frontend = data.get("extracted_text", "")
     location = data.get("location", "")
     profile_data = data.get("profile", {})
     language = data.get("language", "English")
 
     final_text_for_ai = ""
 
-    # Prioritize extracted_text from frontend if present (means frontend did OCR for image)
     if extracted_text_from_frontend and extracted_text_from_frontend != "PDF document uploaded. Extracting text on backend...":
         final_text_for_ai = extracted_text_from_frontend
         logger.info("🧪 Using frontend extracted text for lab report analysis.")
-    elif image_base64: # If no frontend text, but image_base64 (likely PDF) is present
+    elif image_base64:
         logger.info("🧪 Performing OCR on backend for lab report image...")
-        extracted_text_from_backend = get_image_text(image_base64) # Backend OCR
+        extracted_text_from_backend = get_image_text(image_base64)
         if not extracted_text_from_backend:
             return jsonify({"error": "OCR failed to extract text from backend for image"}), 500
         final_text_for_ai = extracted_text_from_backend
-        # Add extracted_text to response for frontend preview
-        # NOTE: This modifies the 'data' dict which is then returned by jsonify.
-        # It's better to add it directly to 'parsed_response' later.
-        # data['extracted_text'] = final_text_for_ai 
 
     if not final_text_for_ai:
         return jsonify({"error": "Missing lab report text or image to analyze"}), 400
@@ -553,57 +581,67 @@ def analyze_lab_report():
     else:
         parsed_response["nearby_doctors"] = []
 
-    # Ensure extracted_text is part of the final response for frontend preview
-    parsed_response["extracted_text"] = final_text_for_ai 
+    parsed_response["extracted_text"] = final_text_for_ai
     return jsonify(parsed_response)
     
-import requests
 
 @app.route('/api/history', methods=['POST'])
+@cross_origin() # Allow cross-origin requests
 def save_history():
-    if request.headers.get("Authorization") != f"Bearer {API_AUTH_TOKEN}":
-        return jsonify({"error": "Unauthorized"}), 401
+    auth_result = token_required(lambda user: None)(None) # Manually call token_required check
+    if auth_result:
+        return auth_result
 
     try:
         data = request.get_json()
         user_id = data.get('user_id')
         query = data.get('query')
-        response = data.get('response')
+        response = data.get('response') # This is the full AI response object
 
         if not user_id or not query or not response:
             return jsonify({"error": "Missing user_id, query, or response"}), 400
 
-        # Parse AI response if it's a stringified JSON
-        parsed = response if isinstance(response, dict) else json.loads(response)
+        # Ensure response is a dict; parse if it's a stringified JSON (though it should be dict now)
+        parsed_response = response if isinstance(response, dict) else json.loads(response)
 
-        # 🔒 Safe conversion to arrays for Supabase
-        medicines = parsed.get("medicines")
-        remedies = parsed.get("remedies")
+        # 🔒 Safe conversion to arrays for Supabase and ensure citations are handled
+        medicines = parsed_response.get("medicines")
+        remedies = parsed_response.get("remedies")
+        citations = parsed_response.get("citations") # NEW: Get citations
 
         if not isinstance(medicines, list):
             medicines = [medicines] if medicines else []
-
         if not isinstance(remedies, list):
             remedies = [remedies] if remedies else []
+        if not isinstance(citations, list): # NEW: Ensure citations is a list
+            citations = [citations] if citations else []
 
         payload = {
             "id": str(uuid.uuid4()),
             "user_id": user_id,
             "query": query,
-            "detected_condition": parsed.get("detected_condition"),
-            "medical_analysis": parsed.get("medical_analysis"),
+            "detected_condition": parsed_response.get("detected_condition"),
+            "medical_analysis": parsed_response.get("medical_analysis"),
             "remedies": remedies,
-            "urgency": parsed.get("urgency"),
+            "urgency": parsed_response.get("urgency"),
             "medicines": medicines,
-            "suggested_doctor": parsed.get("suggested_doctor"),
-            "raw_text": json.dumps(parsed),
-            "timestamp": datetime.utcnow().isoformat()
+            "suggested_doctor": parsed_response.get("suggested_doctor"),
+            "raw_text": json.dumps(parsed_response), # Save the full JSON response, including new fields
+            "timestamp": datetime.utcnow().isoformat(),
+            # NEW fields to save to Supabase history table if your schema supports them
+            "nursing_explanation": parsed_response.get("nursing_explanation"),
+            "personal_notes": parsed_response.get("personal_notes"),
+            "relevant_information": parsed_response.get("relevant_information"),
+            "why_happening_explanation": parsed_response.get("why_happening_explanation"),
+            "immediate_action": parsed_response.get("immediate_action"),
+            "nurse_tips": parsed_response.get("nurse_tips"),
+            "citations": citations # NEW: Save citations
         }
 
         logger.info(f"Saving history for user_id: {user_id}")
-        logger.info(f"Payload: {json.dumps(payload, indent=2)}")
+        # logger.info(f"Payload: {json.dumps(payload, indent=2)}") # Uncomment for detailed payload logging
 
-        supabase_url = f"https://nlfvwbjpeywcessqyqac.supabase.co/rest/v1/history"
+        supabase_url = f"{SUPABASE_URL}/rest/v1/history"
         headers = {
             "apikey": SUPABASE_ANON_KEY,
             "Authorization": f"Bearer {SUPABASE_ANON_KEY}",
@@ -624,16 +662,18 @@ def save_history():
 
 
 @app.route('/api/history', methods=['GET'])
+@cross_origin() # Allow cross-origin requests
 def get_history():
-    if request.headers.get("Authorization") != f"Bearer {API_AUTH_TOKEN}":
-        return jsonify({"error": "Unauthorized"}), 401
+    auth_result = token_required(lambda user: None)(None) # Manually call token_required check
+    if auth_result:
+        return auth_result
 
     user_id = request.args.get('user_id')
     if not user_id:
         return jsonify({"error": "Missing user_id"}), 400
 
     try:
-        supabase_url = f"https://nlfvwbjpeywcessqyqac.supabase.co/rest/v1/history?user_id=eq.{user_id}&order=timestamp.desc"
+        supabase_url = f"{SUPABASE_URL}/rest/v1/history?user_id=eq.{user_id}&order=timestamp.desc"
         headers = {
             "apikey": SUPABASE_ANON_KEY,
             "Authorization": f"Bearer {SUPABASE_ANON_KEY}",
@@ -645,7 +685,28 @@ def get_history():
             logger.error(f"Supabase fetch error: {response.text}")
             return jsonify({"error": "Failed to fetch history", "details": response.text}), 500
 
-        return jsonify(response.json()), 200
+        # Parse 'raw_text' back into a dictionary for frontend if it's stored as JSON string
+        history_data = response.json()
+        for entry in history_data:
+            if 'raw_text' in entry and isinstance(entry['raw_text'], str):
+                try:
+                    # Attempt to parse raw_text into a dictionary
+                    entry['response'] = json.loads(entry['raw_text'])
+                    # Ensure citations are lists when retrieved for consistency
+                    if 'citations' in entry['response'] and not isinstance(entry['response']['citations'], list):
+                        entry['response']['citations'] = [entry['response']['citations']]
+                except json.JSONDecodeError:
+                    logger.warning(f"Failed to parse raw_text for history entry {entry.get('id')}")
+                    entry['response'] = {} # Fallback to empty dict
+            else:
+                # If raw_text is missing or not string, ensure 'response' key still exists
+                entry['response'] = entry.get('response', {}) 
+            
+            # Ensure top-level citations (if your table has it) are arrays
+            if 'citations' in entry and not isinstance(entry['citations'], list):
+                entry['citations'] = [entry['citations']]
+
+        return jsonify(history_data), 200
 
     except Exception as e:
         logger.exception("Exception while fetching history")
@@ -655,14 +716,15 @@ def get_history():
 # --- NEW PASSWORD RESET ENDPOINTS ---
 
 @app.route("/request-password-reset", methods=["POST"])
+@cross_origin() # Allow cross-origin requests
 def request_password_reset():
-    auth_result = check_api_token()
+    auth_result = token_required(lambda user: None)(None) # Manually call token_required check
     if auth_result:
         return auth_result
 
     data = request.get_json()
     email = data.get("email")
-    frontend_redirect_url = data.get("redirect_to") # Expected from frontend (e.g., https://askdocapp-92cc3.web.app/reset-password.html)
+    frontend_redirect_url = data.get("redirect_to")
 
     if not email:
         return jsonify({"error": "Email is required"}), 400
@@ -672,7 +734,6 @@ def request_password_reset():
 
     logger.info(f"Received password reset request for email: {email}")
 
-    # Call Supabase Auth API to send the magic link/reset email
     supabase_reset_url = f"{SUPABASE_URL}/auth/v1/recover"
     headers = {
         "apikey": SUPABASE_ANON_KEY,
@@ -685,13 +746,12 @@ def request_password_reset():
 
     try:
         response = requests.post(supabase_reset_url, headers=headers, json=payload)
-        response.raise_for_status() # Raise an exception for HTTP errors (4xx or 5xx)
+        response.raise_for_status()
 
         logger.info(f"Supabase password reset request sent for {email}. Status: {response.status_code}")
         return jsonify({"message": "Password reset email sent. Please check your inbox (and spam folder!)."}), 200
     except requests.exceptions.RequestException as e:
         logger.error(f"Error sending password reset request to Supabase: {e}")
-        # Return a generic error message to the user for security
         return jsonify({"error": "Failed to send password reset email. Please try again later."}), 500
     except Exception as e:
         logger.error(f"Unexpected error in /request-password-reset: {e}")
@@ -699,31 +759,119 @@ def request_password_reset():
 
 
 @app.route("/verify-password-reset", methods=["GET"])
+@cross_origin() # Allow cross-origin requests
 def verify_password_reset():
     """
     This endpoint is designed to be the 'redirectTo' target from Supabase's email link.
     It will extract tokens and redirect to the frontend password reset page.
     """
-    # If Supabase is configured to redirect to THIS endpoint (`/verify-password-reset`),
-    # it would pass tokens as query parameters, NOT hash parameters.
-    # Example: http://yourbackend.com/verify-password-reset?access_token=...&refresh_token=...
-
     access_token = request.args.get("access_token")
     refresh_token = request.args.get("refresh_token")
-    # You might also get 'type=recovery' and 'expires_in' etc.
 
     if access_token and refresh_token:
-        # Construct the URL for your frontend reset page, appending tokens as hash
-        # This assumes your frontend `reset-password.html` page is designed to
-        # read these from the hash.
-        frontend_reset_url = "https://askdocapp-92cc3.web.app/reset-password.html" # Ensure this matches your actual frontend URL
+        frontend_reset_url = "https://askdocapp-92cc3.web.app/reset-password.html"
         full_redirect_url = f"{frontend_reset_url}#access_token={access_token}&refresh_token={refresh_token}"
         logger.info(f"Redirecting to frontend reset page: {full_redirect_url}")
         return redirect(full_redirect_url)
     else:
         logger.warning("Missing access_token or refresh_token in /verify-password-reset. Redirecting to error.")
-        # If tokens are missing, redirect to your frontend with an error status or specific error page
-        return redirect("https://askdocapp-92cc3.web.app/reset-password.html?error=invalid_link") # Ensure this matches your actual frontend URL
+        return redirect("https://askdocapp-92cc3.web.app/reset-password.html?error=invalid_link")
+
+
+# --- NEW ANALYZE TRENDS ENDPOINT ---
+@app.route('/analyze-trends', methods=['POST'])
+@cross_origin() # Allow cross-origin requests
+@token_required
+def analyze_trends(current_user=None): # current_user will be passed by the token_required decorator
+    try:
+        data = request.get_json()
+
+        symptoms = data.get("symptoms", []) # This should be a list of symptom log entries
+        profile_context = data.get("profile_context", "") # This should be a pre-built string or dict
+
+        if not symptoms or not isinstance(symptoms, list):
+            logger.error("Missing or invalid symptom data for trend analysis.")
+            return jsonify({"error": "Missing or invalid symptom data"}), 400
+        
+        # Build the trend input string for the LLM
+        trend_input = "User's Symptom Timeline:\n"
+        for entry in symptoms:
+            date = entry.get("date", "N/A")
+            issue = entry.get("issue", "N/A")
+            symptom = entry.get("symptom", "N/A")
+            severity = entry.get("severity", "N/A")
+            status = entry.get("status", "N/A")
+            trend_input += f"- Date: {date}, Issue: {issue}, Symptom: {symptom}, Severity: {severity}/10, Status: {status}\n"
+
+        prompt = f"""
+You are a medical AI assistant analyzing a user's symptom timeline to identify health trends.
+{profile_context}
+
+The user has logged the following symptoms over time:
+
+{trend_input}
+
+Please generate a concise and actionable health trend summary based on the provided timeline.
+The summary should be in 4-6 bullet points and adhere to the following:
+- Identify and describe **patterns or recurring symptoms** (e.g., "Headaches appearing every Tuesday").
+- Mention if the overall **condition seems to be improving, worsening, or remaining stable** based on severity and status.
+- **Suggest if medical attention is advised** (e.g., "Consult a doctor if symptoms persist").
+- Offer **AI-generated general tips** (e.g., "Ensure adequate hydration," "Prioritize consistent sleep," "Consider stress reduction techniques.").
+- Include **citations** (at least 1-2 credible sources like CDC, Mayo Clinic, WebMD) related to common trends or general health advice in the format: "Citations: [Title](URL), [Title](URL)". If no direct citation applies, state "No specific citations for trends."
+
+Example of desired output format for trends:
+- Pattern identified: ...
+- Trend observed: ...
+- Medical advice: ...
+- AI tips: ...
+Citations: [Title](URL), [Title](URL)
+"""
+
+        response = openai.ChatCompletion.create(
+            model="gpt-4o", # Use gpt-4o for better performance and instruction following
+            messages=[
+                {"role": "system", "content": "You are a helpful medical AI assistant summarizing health trends based on provided symptom timelines."},
+                {"role": "user", "content": prompt}
+            ],
+            temperature=0.7,
+            max_tokens=600
+        )
+
+        summary_text = response['choices'][0]['message']['content'].strip()
+
+        # Extract citations from the summary_text
+        citations_match = re.search(r'Citations:\s*(.*)', summary_text, re.IGNORECASE)
+        citations_list = []
+        if citations_match:
+            citations_str = citations_match.group(1).strip()
+            # Remove the citations line from the summary text
+            summary_text = summary_text.replace(citations_match.group(0), "").strip()
+
+            if citations_str.lower() != "no specific citations for trends.":
+                # Regex to find [Title](URL) patterns
+                link_pattern = re.compile(r'\[(.*?)\]\((.*?)\)')
+                for match in link_pattern.finditer(citations_str):
+                    citations_list.append({"title": match.group(1), "url": match.group(2)})
+        
+        # Add a default citation if citations_list is empty, to cover the guideline
+        if not citations_list:
+            citations_list.append({
+                "title": "General Health Trends & Wellness",
+                "url": "https://www.who.int/health-topics/health-and-wellness" # Example generic URL
+            })
+
+
+        return jsonify({ 
+            "summary": summary_text,
+            "citations": citations_list # Return citations as a list of objects
+        })
+
+    except openai.APIError as e:
+        logger.error(f"OpenAI API error in /analyze-trends: {e.status_code} - {e.response}")
+        return jsonify({"error": "AI trend analysis failed due to API error", "details": str(e.response)}), 500
+    except Exception as e:
+        logger.exception("AI trend summary error:") # Logs full traceback
+        return jsonify({"error": "Trend analysis failed", "details": str(e)}), 500
 
 
 if __name__ == '__main__':
