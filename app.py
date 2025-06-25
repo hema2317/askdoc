@@ -268,30 +268,48 @@ def parse_openai_json(reply):
             "nursing_explanation": "Not provided.", "personal_notes": "Not provided.", "relevant_information": "Not provided.",
             "citations": []
         }
+@app.route("/api/doctors", methods=["POST"])
+@cross_origin()
+@token_required
+def api_get_doctors(current_user=None):
+    data = request.get_json()
+    specialty = data.get("specialty")
+    location = data.get("location")
+
+    if not specialty or not location:
+        return jsonify({"error": "Specialty and location are required"}), 400
+
+    if isinstance(location, str) and ',' in location:
+        try:
+            lat_str, lng_str = location.split(',')
+            location = {'lat': float(lat_str), 'lng': float(lng_str)}
+        except ValueError:
+            return jsonify({"error": "Invalid location format"}), 400
+    elif not isinstance(location, dict) or 'lat' not in location or 'lng' not in location:
+        return jsonify({"error": "Invalid location object"}), 400
+
+    doctors = get_nearby_doctors(specialty, location)
+    return jsonify({"doctors": doctors}), 200
 
 @app.route('/api/doctors', methods=['GET'])
 @cross_origin()
-@token_required # Apply the decorator directly
-def doctors_api(current_user=None): # Accept current_user
+@token_required
+def doctors_api(current_user=None):
+    lat = request.args.get('lat')
+    lng = request.args.get('lng')
+    specialty = request.args.get('specialty', 'general')
+
+    if not lat or not lng:
+        return jsonify({'error': 'Missing lat/lng'}), 400
+
     try:
-        lat = request.args.get('lat')
-        lng = request.args.get('lng')
-        specialty = request.args.get('specialty', 'general')
+        location = {'lat': float(lat), 'lng': float(lng)}
+    except ValueError:
+        return jsonify({'error': 'Invalid lat/lng format'}), 400
 
-        if not lat or not lng:
-            return jsonify({'error': 'Missing latitude or longitude'}), 400
+    doctors = get_nearby_doctors(specialty, location)
+    return jsonify({'results': doctors}), 200
 
-        try:
-            location = {'lat': float(lat), 'lng': float(lng)}
-        except ValueError:
-            return jsonify({'error': 'Invalid latitude or longitude format'}), 400
-
-        doctors = get_nearby_doctors(specialty, location)
-        return jsonify({'results': doctors}), 200
-
-    except Exception as e:
-        logger.exception("Error in /api/doctors")
-        return jsonify({'error': 'Internal server error'}), 500
 
 def get_nearby_doctors(specialty, location):
     """Fetches nearby doctors using Google Places API."""
@@ -713,6 +731,7 @@ def save_history(current_user=None): # Accept current_user
     except Exception as e:
         logger.exception("Exception while saving history")
         return jsonify({"error": str(e)}), 500
+
 
 
 @app.route('/api/history', methods=['GET'])
