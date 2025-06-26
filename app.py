@@ -32,12 +32,8 @@ API_AUTH_TOKEN = os.getenv("API_AUTH_TOKEN") # The secret token expected from fr
 
 # Supabase Project URL and Anon Key (from your frontend code)
 SUPABASE_URL = os.getenv("SUPABASE_URL", "https://nlfvwbjpeywcessqyqac.supabase.co")
-# IMPORTANT: Double-check this SUPABASE_ANON_KEY. The one in your traceback looks different from a valid anon key format.
-# It should be a long string starting with 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...'
-# Your previous snippet had: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im5sZnZ3YmpwZXl3Y2Vzc3F5cWFjIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NDU4NTczNjQsImV4cCI6MjA2MTQzMzM2NH0.zL84P7bK7qHxJt8MtkTPkqNe4U_K512ZgtpPvD9PoRI"
-# Which looked more correct.
 SUPABASE_ANON_KEY = os.getenv("SUPABASE_ANON_KEY", "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im5sZnZ3YmpwZXl3Y2Vzc3F5cWFjIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NDU4NTczNjQsImV4cCI6MjA2MTQzMzM2NH0.zL84P7bK7qHxJt8MtkTPkqNe4U_K512ZgtpPvD9PoRI")
-
+SUPABASE_SERVICE_ROLE_KEY = os.getenv("eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im5sZnZ3YmpwZXl3Y2Vzc3F5cWFjIiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc0NTg1NzM2NCwiZXhwIjoyMDYxNDMzMzY0fQ.IC28ip8ky-qdHZkhoND-GUh1fY_y2H6qSxIGdD5WqS4")
 
 openai.api_key = OPENAI_API_KEY
 
@@ -775,6 +771,30 @@ def get_history(current_user=None): # Accept current_user
 
     except Exception as e:
         logger.exception("Exception while fetching history")
+        return jsonify({"error": str(e)}), 500
+
+@app.route("/delete-account", methods=["POST"])
+def delete_account():
+    if not is_authorized(request):
+        return jsonify({"error": "Unauthorized"}), 401
+
+    data = request.get_json()
+    user_id = data.get("user_id")
+
+    if not user_id:
+        return jsonify({"error": "Missing user_id"}), 400
+
+    try:
+        # Delete from Supabase Auth
+        supabase.auth.admin.delete_user(user_id)
+
+        # Optionally delete user-related data
+        supabase.table("profiles").delete().eq("user_id", user_id).execute()
+        supabase.table("medications").delete().eq("user_id", user_id).execute()
+        supabase.table("appointments").delete().eq("user_id", user_id).execute()
+
+        return jsonify({"success": True, "message": "Account deleted."})
+    except Exception as e:
         return jsonify({"error": str(e)}), 500
 
 
