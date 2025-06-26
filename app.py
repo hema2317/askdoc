@@ -34,6 +34,7 @@ API_AUTH_TOKEN = os.getenv("API_AUTH_TOKEN") # The secret token expected from fr
 SUPABASE_URL = os.getenv("SUPABASE_URL", "https://nlfvwbjpeywcessqyqac.supabase.co")
 SUPABASE_ANON_KEY = os.getenv("SUPABASE_ANON_KEY", "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im5sZnZ3YmpwZXl3Y2Vzc3F5cWFjIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NDU4NTczNjQsImV4cCI6MjA2MTQzMzM2NH0.zL84P7bK7qHxJt8MtkTPkqNe4U_K512ZgtpPvD9PoRI")
 SUPABASE_SERVICE_ROLE_KEY = os.getenv("eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im5sZnZ3YmpwZXl3Y2Vzc3F5cWFjIiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc0NTg1NzM2NCwiZXhwIjoyMDYxNDMzMzY0fQ.IC28ip8ky-qdHZkhoND-GUh1fY_y2H6qSxIGdD5WqS4")
+supabase = create_client(SUPABASE_URL, SUPABASE_SERVICE_KEY)
 
 openai.api_key = OPENAI_API_KEY
 
@@ -774,42 +775,24 @@ def get_history(current_user=None): # Accept current_user
         return jsonify({"error": str(e)}), 500
 
 @app.route("/delete-account", methods=["POST"])
-@token_required
-def delete_account(current_user):
-    data = request.json
+def delete_account():
+    data = request.get_json()
     user_id = data.get("user_id")
 
     if not user_id:
-        return jsonify({"error": "Missing user_id"}), 400
+        return jsonify({"success": False, "error": "Missing user_id"}), 400
 
     try:
-        # Delete from your own tables
-        db.medications.delete_many({"user_id": user_id})
-        db.appointments.delete_many({"user_id": user_id})
-        db.profiles.delete_one({"user_id": user_id})
+        # Delete user from Supabase Auth
+        response = supabase.auth.admin.delete_user(user_id)
 
-        # Delete from Supabase Auth (REAL DELETE)
-        SUPABASE_URL = os.getenv("SUPABASE_URL")
-        SUPABASE_SERVICE_ROLE_KEY = os.getenv("SUPABASE_SERVICE_ROLE_KEY")
-        headers = {
-            "apikey": SUPABASE_SERVICE_ROLE_KEY,
-            "Authorization": f"Bearer {SUPABASE_SERVICE_ROLE_KEY}",
-            "Content-Type": "application/json"
-        }
+        # Optionally: delete from your user profile table too
+        supabase.table("profiles").delete().eq("user_id", user_id).execute()
 
-        response = requests.delete(
-            f"{SUPABASE_URL}/auth/v1/admin/users/{user_id}",
-            headers=headers
-        )
-
-        if response.status_code != 204:
-            return jsonify({"error": "Supabase Auth deletion failed"}), 500
-
-        return jsonify({"success": True}), 200
-
+        return jsonify({"success": True})
     except Exception as e:
-        return jsonify({"error": str(e)}), 500
-
+        print(f"Deletion error: {str(e)}")
+        return jsonify({"success": False, "error": str(e)}), 500
 
 
 # --- NEW PASSWORD RESET ENDPOINTS ---
