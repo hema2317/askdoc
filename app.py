@@ -774,28 +774,42 @@ def get_history(current_user=None): # Accept current_user
         return jsonify({"error": str(e)}), 500
 
 @app.route("/delete-account", methods=["POST"])
-def delete_account():
-    if not is_authorized(request):
-        return jsonify({"error": "Unauthorized"}), 401
-
-    data = request.get_json()
+@token_required
+def delete_account(current_user):
+    data = request.json
     user_id = data.get("user_id")
 
     if not user_id:
         return jsonify({"error": "Missing user_id"}), 400
 
     try:
-        # Delete from Supabase Auth
-        supabase.auth.admin.delete_user(user_id)
+        # Delete from your own tables
+        db.medications.delete_many({"user_id": user_id})
+        db.appointments.delete_many({"user_id": user_id})
+        db.profiles.delete_one({"user_id": user_id})
 
-        # Optionally delete user-related data
-        supabase.table("profiles").delete().eq("user_id", user_id).execute()
-        supabase.table("medications").delete().eq("user_id", user_id).execute()
-        supabase.table("appointments").delete().eq("user_id", user_id).execute()
+        # Delete from Supabase Auth (REAL DELETE)
+        SUPABASE_URL = os.getenv("SUPABASE_URL")
+        SUPABASE_SERVICE_ROLE_KEY = os.getenv("SUPABASE_SERVICE_ROLE_KEY")
+        headers = {
+            "apikey": SUPABASE_SERVICE_ROLE_KEY,
+            "Authorization": f"Bearer {SUPABASE_SERVICE_ROLE_KEY}",
+            "Content-Type": "application/json"
+        }
 
-        return jsonify({"success": True, "message": "Account deleted."})
+        response = requests.delete(
+            f"{SUPABASE_URL}/auth/v1/admin/users/{user_id}",
+            headers=headers
+        )
+
+        if response.status_code != 204:
+            return jsonify({"error": "Supabase Auth deletion failed"}), 500
+
+        return jsonify({"success": True}), 200
+
     except Exception as e:
         return jsonify({"error": str(e)}), 500
+
 
 
 # --- NEW PASSWORD RESET ENDPOINTS ---
