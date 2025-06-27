@@ -4,150 +4,42 @@ import json
 import logging
 import re
 from datetime import datetime
-from functools import wraps
-from time import sleep # Added for retry delay
+from functools import wraps # Import functools for decorators
 
-from flask import Flask, request, jsonify, redirect, url_for, make_response
-from flask_cors import CORS, cross_origin
+from flask import Flask, request, jsonify, redirect, url_for, make_response # Import make_response for decorator
+from flask_cors import CORS, cross_origin # Ensure cross_origin is imported
 import openai
 import requests
 import psycopg2
 from psycopg2 import OperationalError
-from psycopg2 import pool
+import base64
 from dotenv import load_dotenv
 
-# Load environment variables from .env file
-load_dotenv()
+load_dotenv() # ✅ Load environment variables
 
-app = Flask(__name__)
+app = Flask(__name__) # ✅ Define app only once
 CORS(app, resources={r"/*": {"origins": "*"}})
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 # --- Environment Variables ---
-# Supabase Project URL and API Keys (loaded first, as they are crucial for client initialization)
-SUPABASE_URL = os.getenv("SUPABASE_URL")
-SUPABASE_ANON_KEY = os.getenv("SUPABASE_ANON_KEY")
-SUPABASE_SERVICE_ROLE_KEY = os.getenv("SUPABASE_SERVICE_ROLE_KEY")
-
-# Other API Keys
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 DATABASE_URL = os.getenv("DATABASE_URL")
 GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")
 GOOGLE_VISION_API_KEY = os.getenv("GOOGLE_VISION_API_KEY")
 API_AUTH_TOKEN = os.getenv("API_AUTH_TOKEN") # The secret token expected from frontend
 
-# --- Environment Variable Validation and Logging ---
-missing_env_vars = []
-if not OPENAI_API_KEY:
-    missing_env_vars.append("OPENAI_API_KEY")
-if not DATABASE_URL:
-    missing_env_vars.append("DATABASE_URL")
-if not GOOGLE_API_KEY:
-    missing_env_vars.append("GOOGLE_API_KEY")
-if not GOOGLE_VISION_API_KEY:
-    missing_env_vars.append("GOOGLE_VISION_API_KEY")
-if not API_AUTH_TOKEN:
-    missing_env_vars.append("API_AUTH_TOKEN")
-if not SUPABASE_URL:
-    missing_env_vars.append("SUPABASE_URL")
-if not SUPABASE_ANON_KEY:
-    missing_env_vars.append("SUPABASE_ANON_KEY")
-if not SUPABASE_SERVICE_ROLE_KEY:
-    missing_env_vars.append("SUPABASE_SERVICE_ROLE_KEY")
+# Supabase Project URL and Anon Key (from your frontend code)
+SUPABASE_URL = os.getenv("SUPABASE_URL", "https://nlfvwbjpeywcessqyqac.supabase.co")
+# IMPORTANT: Double-check this SUPABASE_ANON_KEY. The one in your traceback looks different from a valid anon key format.
+# It should be a long string starting with 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...'
+# Your previous snippet had: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im5sZnZ3YmpwZXl3Y2Vzc3F5cWFjIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NDU4NTczNjQsImV4cCI6MjA2MTQzMzM2NH0.zL84P7bK7qHxJt8MtkTPkqNe4U_K512ZgtpPvD9PoRI"
+# Which looked more correct.
+SUPABASE_ANON_KEY = os.getenv("SUPABASE_ANON_KEY", "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im5sZnZ3YmpwZXl3Y2Vzc3F5cWFjIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NDU4NTczNjQsImV4cCI6MjA2MTQzMzM2NH0.zL84P7bK7qHxJt8MtkTPkqNe4U_K512ZgtpPvD9PoRI")
 
-if missing_env_vars:
-    logger.error(f"❌ Missing one or more critical environment variables: {', '.join(missing_env_vars)}. Please check your .env file or deployment configuration.")
-    # In a production app, you might want to exit or disable functionality if critical keys are missing
-    # import sys
-    # sys.exit(1) # Uncomment to prevent startup if critical keys are missing
 
-# Set OpenAI API key
 openai.api_key = OPENAI_API_KEY
-
-# --- Initialize the PostgreSQL connection pool with auto-retry on app boot ---
-db_pool = None # Initialize to None
-# Only attempt to initialize if DATABASE_URL is provided
-if DATABASE_URL:
-    for i in range(3): # Try up to 3 times
-        try:
-            db_pool = psycopg2.pool.SimpleConnectionPool(
-                1, 10, # min and max connections
-                dsn=DATABASE_URL,
-                sslmode='require'
-            )
-            logger.info("✅ DB pool initialized on try %d", i + 1)
-            break # Exit loop if connection is successful
-        except Exception as e:
-            logger.warning(f"DB connection attempt {i+1} failed: {e}")
-            if i < 2: # Don't sleep after the last attempt
-                sleep(2) # Wait for 2 seconds before retrying
-    else: # This 'else' block executes if the loop completes without 'break'
-        logger.error("❌ Could not connect to DB after multiple attempts. Database functions will be unavailable.")
-else:
-    logger.warning("DATABASE_URL not found, skipping DB pool initialization.")
-
-
-# --- Database Abstraction for Postgres ---
-class DBClient:
-    def __init__(self):
-        pass # No need to store connection_string, handled by global db_pool
-
-    def _get_connection(self):
-        """Gets a connection from the global database pool."""
-        if db_pool:
-            return db_pool.getconn()
-        # If db_pool is None (failed initialization), raise an error immediately
-        raise Exception("Database connection pool not initialized or available.")
-
-    def delete_many(self, table_name, filter_criteria):
-        """
-        Deletes multiple records from a table based on criteria.
-        Uses connection from pool and returns it.
-        WARNING: This is a simplified example. For production, ensure
-        SQL injection prevention (e.g., using an ORM or a more robust
-        parameterized query builder for dynamic WHERE clauses).
-        """
-        conn = None 
-        try:
-            conn = self._get_connection()
-            conn.set_session(statement_timeout=5000) # Set 5-second timeout for queries
-            cursor = conn.cursor()
-            
-            # Construct WHERE clause safely using parameterized query
-            where_clauses = []
-            values = []
-            for key, value in filter_criteria.items():
-                where_clauses.append(f"{key} = %s")
-                values.append(value)
-            
-            sql = f"DELETE FROM {table_name} WHERE {' AND '.join(where_clauses)};"
-            
-            cursor.execute(sql, tuple(values))
-            conn.commit()
-            logger.info(f"Deleted {cursor.rowcount} records from {table_name} with criteria {filter_criteria}")
-            return cursor.rowcount
-        except Exception as e:
-            logger.error(f"Error deleting from {table_name}: {e}")
-            if conn: # Ensure conn exists before rollback
-                conn.rollback()
-            raise # Re-raise the exception to be caught by route-level retry logic
-        finally:
-            if conn and db_pool: # Only return connection to pool if pool is valid
-                db_pool.putconn(conn)
-
-    def delete_one(self, table_name, filter_criteria):
-        """
-        Deletes a single record from a table based on criteria.
-        This simply calls delete_many with the understanding that the filter
-        criteria should ideally result in one record.
-        """
-        return self.delete_many(table_name, filter_criteria)
-
-# Initialize your database client
-db = DBClient()
-
 
 # --- Authentication Middleware (Updated for decorator pattern) ---
 def token_required(f):
@@ -155,24 +47,26 @@ def token_required(f):
     def decorated(*args, **kwargs):
         auth_header = request.headers.get("Authorization")
         if not auth_header or not auth_header.startswith("Bearer "):
-            logger.warning("Unauthorized access attempt: No Bearer token provided or malformed header.")
-            return make_response(jsonify({"error": "Unauthorized: Bearer token missing or malformed"}), 401)
-
-        # Check if API_AUTH_TOKEN is actually set before comparison
-        if not API_AUTH_TOKEN:
-            logger.error("API_AUTH_TOKEN environment variable is not set. Cannot authenticate requests.")
-            return make_response(jsonify({"error": "Server authentication not configured"}), 500)
+            logger.warning(f"Unauthorized access attempt: No Bearer token provided or malformed header.")
+            return make_response(jsonify({"error": "Unauthorized: Bearer token missing or malformed"}), 401) # Use make_response
 
         token = auth_header.split(" ")[1] # Extract the token part
         if token != API_AUTH_TOKEN:
-            logger.warning(f"Unauthorized access attempt: Invalid API token. Provided: {token[:5]}... (truncated)")
-            return make_response(jsonify({"error": "Unauthorized: Invalid API token"}), 401)
+            logger.warning(f"Unauthorized access attempt: Invalid API token. Provided: {token}")
+            return make_response(jsonify({"error": "Unauthorized: Invalid API token"}), 401) # Use make_response
         
         # In a real app, you'd verify the JWT token here and extract user_id.
         # For this example, we'll pass a dummy current_user.
         current_user = {"id": "auth_user_id"} # Replace with actual user ID from token validation if available
         return f(current_user=current_user, *args, **kwargs)
     return decorated
+
+def get_db_connection():
+    try:
+        return psycopg2.connect(DATABASE_URL, sslmode='require')
+    except OperationalError as e:
+        logger.error(f"Database connection failed: {e}")
+        return None
 
 def build_profile_context(profile_json):
     """Builds a human-readable context string from the user's profile data."""
@@ -320,6 +214,7 @@ def parse_openai_json(reply):
     """
     try:
         # Try to find a JSON block wrapped in markdown code fences first
+        # FIX: Ensure regex pattern is correctly formed as a multiline string
         match = re.search(r'```json\s*(\{.*?\})\s*```', reply, re.DOTALL)
         if match:
             json_str = match.group(1)
@@ -373,7 +268,6 @@ def parse_openai_json(reply):
             "nursing_explanation": "Not provided.", "personal_notes": "Not provided.", "relevant_information": "Not provided.",
             "citations": []
         }
-
 @app.route("/api/doctors", methods=["POST"])
 @cross_origin()
 @token_required
@@ -537,13 +431,7 @@ def get_image_text(base64_image):
 
 @app.route("/health", methods=["GET"])
 def health():
-    """Healthcheck endpoint for Render."""
-    # You can add more checks here, e.g., if db_pool is None, return 500
-    if db_pool and db_pool.maxconn > 0: # A basic check for pool existence
-        return jsonify({"status": "healthy", "db_pool_initialized": True}), 200
-    else:
-        # If DB pool didn't initialize, we can still report "unhealthy" but keep app running
-        return jsonify({"status": "unhealthy", "db_pool_initialized": False, "message": "Database pool not ready"}), 503
+    return jsonify({"status": "ok", "timestamp": datetime.now().isoformat()})
 
 @app.route("/analyze", methods=["POST"])
 @cross_origin()
@@ -825,14 +713,10 @@ def save_history(current_user=None): # Accept current_user
 
         logger.info(f"Saving history for user_id: {user_id}")
 
-        if not SUPABASE_URL or not SUPABASE_ANON_KEY:
-            logger.error("Supabase URL or ANON Key is not set. Cannot save history.")
-            return jsonify({"error": "Supabase credentials missing for history saving."}), 500
-
         supabase_url = f"{SUPABASE_URL}/rest/v1/history"
         headers = {
             "apikey": SUPABASE_ANON_KEY,
-            "Authorization": f"Bearer {SUPABASE_ANON_KEY}", # Using ANON key for history saving
+            "Authorization": f"Bearer {SUPABASE_ANON_KEY}",
             "Content-Type": "application/json",
             "Prefer": "return=representation"
         }
@@ -849,6 +733,7 @@ def save_history(current_user=None): # Accept current_user
         return jsonify({"error": str(e)}), 500
 
 
+
 @app.route('/api/history', methods=['GET'])
 @cross_origin()
 @token_required # Apply the decorator directly
@@ -858,14 +743,10 @@ def get_history(current_user=None): # Accept current_user
         return jsonify({"error": "Missing user_id"}), 400
 
     try:
-        if not SUPABASE_URL or not SUPABASE_ANON_KEY:
-            logger.error("Supabase URL or ANON Key is not set. Cannot fetch history.")
-            return jsonify({"error": "Supabase credentials missing for history fetching."}), 500
-
         supabase_url = f"{SUPABASE_URL}/rest/v1/history?user_id=eq.{user_id}&order=timestamp.desc"
         headers = {
             "apikey": SUPABASE_ANON_KEY,
-            "Authorization": f"Bearer {SUPABASE_ANON_KEY}", # Using ANON key for history fetching
+            "Authorization": f"Bearer {SUPABASE_ANON_KEY}",
             "Content-Type": "application/json"
         }
 
@@ -896,85 +777,6 @@ def get_history(current_user=None): # Accept current_user
         logger.exception("Exception while fetching history")
         return jsonify({"error": str(e)}), 500
 
-@app.route("/delete-account", methods=["POST"])
-@token_required
-def delete_account(current_user): # current_user is passed by the token_required decorator
-    data = request.json
-    user_id = data.get("user_id")
-
-    if not user_id:
-        return jsonify({"error": "Missing user_id"}), 400
-
-    # Critical check for service role key
-    if not SUPABASE_SERVICE_ROLE_KEY:
-        logger.error("SUPABASE_SERVICE_ROLE_KEY is not set. Account deletion via Supabase Admin API will fail.")
-        return jsonify({"error": "Server configuration error: Supabase Service Role Key missing."}), 500
-    
-    if not SUPABASE_URL:
-        logger.error("SUPABASE_URL is not set. Supabase API calls will fail.")
-        return jsonify({"error": "Server configuration error: Supabase URL missing."}), 500
-
-    # Retry logic for database operations for custom tables
-    for attempt in range(2): # Try up to 2 times
-        try:
-            # Delete from your own tables
-            db.delete_many("medications", {"user_id": user_id})
-            db.delete_many("appointments", {"user_id": user_id})
-            db.delete_one("profiles", {"user_id": user_id})
-            logger.info(f"Deleted user data from custom tables for user_id: {user_id}")
-            break # If successful, break out of the retry loop
-        except (psycopg2.OperationalError, AttributeError) as e: # Catch AttributeError if db_pool is None
-            logger.warning(f"Retrying DB connection for custom table deletion due to: {e} (attempt {attempt+1})")
-            global db_pool # Declare global to reassign the pool
-            if db_pool: # Only close if it exists
-                db_pool.closeall()
-            # Attempt to reinitialize the pool
-            try:
-                if DATABASE_URL: # Only try to reinitialize if DATABASE_URL is available
-                    db_pool = psycopg2.pool.SimpleConnectionPool(1, 10, dsn=DATABASE_URL, sslmode="require")
-                    logger.info("Database connection pool reinitialized successfully for retry.")
-                else:
-                    logger.error("DATABASE_URL is not set, cannot reinitialize DB pool for retry.")
-                    db_pool = None # Ensure it's None if reinitialization fails
-            except Exception as pool_e:
-                logger.error(f"Failed to reinitialize database connection pool during retry: {pool_e}")
-                db_pool = None # Ensure it's None if reinitialization fails
-                if attempt == 1: # If this was the last attempt and reinitialization failed
-                    logger.error("Failed to reinitialize database pool after retries, cannot proceed with user data deletion.")
-                    return jsonify({"error": "Failed to reinitialize database pool, cannot proceed with user data deletion."}), 500
-
-            if attempt == 1: # If this was the last attempt and we still hit an OperationalError/AttributeError
-                logger.error("Failed to connect to database for custom table deletion after retries.")
-                return jsonify({"error": "Failed to connect to database for custom table deletion."}), 500
-        except Exception as e: # Catch any other unexpected errors during custom table deletion
-            logger.exception(f"Unexpected error during custom table deletion for user_id: {user_id}")
-            return jsonify({"error": f"Failed to delete user data from custom tables: {str(e)}"}), 500
-
-
-    try:
-        # Delete from Supabase Auth (REAL DELETE)
-        headers = {
-            "apikey": SUPABASE_SERVICE_ROLE_KEY,
-            "Authorization": f"Bearer {SUPABASE_SERVICE_ROLE_KEY}", # Use service_role key for admin actions
-            "Content-Type": "application/json"
-        }
-
-        response = requests.delete(
-            f"{SUPABASE_URL}/auth/v1/admin/users/{user_id}",
-            headers=headers
-        )
-
-        if response.status_code == 204: # 204 No Content is a successful deletion
-            logger.info(f"Successfully deleted user from Supabase Auth: {user_id}")
-            return jsonify({"success": True, "message": "Account deleted successfully."}), 200
-        else:
-            logger.error(f"Supabase Auth deletion failed for user {user_id}. Status: {response.status_code}, Response: {response.text}")
-            return jsonify({"error": "Supabase Auth deletion failed", "details": response.text}), 500
-
-    except Exception as e:
-        logger.exception(f"Error during account deletion for user_id: {user_id}")
-        return jsonify({"error": str(e)}), 500
-
 
 # --- NEW PASSWORD RESET ENDPOINTS ---
 
@@ -993,10 +795,6 @@ def request_password_reset(current_user=None): # Accept current_user
         return jsonify({"error": "Redirect URL for password reset is required"}), 400
 
     logger.info(f"Received password reset request for email: {email}")
-
-    if not SUPABASE_URL or not SUPABASE_ANON_KEY:
-        logger.error("Supabase URL or ANON Key is not set. Cannot request password reset.")
-        return jsonify({"error": "Supabase credentials missing for password reset."}), 500
 
     supabase_reset_url = f"{SUPABASE_URL}/auth/v1/recover"
     headers = {
@@ -1036,14 +834,12 @@ def verify_password_reset():
     refresh_token = request.args.get("refresh_token")
 
     if access_token and refresh_token:
-        # IMPORTANT: Replace with your actual frontend password reset URL
-        frontend_reset_url = "https://askdocapp-92cc3.web.app/reset-password.html" 
+        frontend_reset_url = "https://askdocapp-92cc3.web.app/reset-password.html"
         full_redirect_url = f"{frontend_reset_url}#access_token={access_token}&refresh_token={refresh_token}"
         logger.info(f"Redirecting to frontend reset page: {full_redirect_url}")
         return redirect(full_redirect_url)
     else:
         logger.warning("Missing access_token or refresh_token in /verify-password-reset. Redirecting to error.")
-        # IMPORTANT: Replace with your actual frontend error page or a default route
         return redirect("https://askdocapp-92cc3.web.app/reset-password.html?error=invalid_link")
 
 
