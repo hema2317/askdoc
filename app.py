@@ -16,8 +16,8 @@ from psycopg2 import OperationalError
 from psycopg2 import pool
 from dotenv import load_dotenv
 
-# Load environment variables from .env file
-load_dotenv()
+SUPABASE_URL = os.getenv("SUPABASE_URL")
+
 
 app = Flask(__name__)
 CORS(app, resources={r"/*": {"origins": "*"}})
