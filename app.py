@@ -12,6 +12,7 @@ import openai
 import requests
 import psycopg2
 from psycopg2 import OperationalError
+from psycopg2 import pool # Added for connection pooling
 from dotenv import load_dotenv
 
 # Load environment variables from .env file
@@ -33,9 +34,9 @@ API_AUTH_TOKEN = os.getenv("API_AUTH_TOKEN") # The secret token expected from fr
 # Supabase Project URL and Anon Key
 SUPABASE_URL = os.getenv("SUPABASE_URL", "https://nlfvwbjpeywcessqyqac.supabase.co")
 # IMPORTANT: Replace with your actual SUPABASE_ANON_KEY from your .env or Supabase project settings
-SUPABASE_ANON_KEY = os.getenv("SUPABASE_ANON_KEY", "YOUR_ACTUAL_SUPABASE_ANON_KEY_HERE")
+SUPABASE_ANON_KEY = os.getenv("SUPABASE_ANON_KEY", "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im5sZnZ3YmpwZXl3Y2Vzc3F5cWFjIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NDU4NTczNjQsImV4cCI6MjA2MTQzMzM2NH0.zL84P7bK7qHxJt8MtkTPkqNe4U_K512ZgtpPvD9PoRI")
 # IMPORTANT: Replace with your actual SUPABASE_SERVICE_ROLE_KEY from your .env or Supabase project settings
-SUPABASE_SERVICE_ROLE_KEY = os.getenv("SUPABASE_SERVICE_ROLE_KEY", "YOUR_ACTUAL_SUPABASE_SERVICE_ROLE_KEY_HERE")
+SUPABASE_SERVICE_ROLE_KEY = os.getenv("SUPABASE_SERVICE_ROLE_KEY", "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im5sZnZ3YmpwZXl3Y2Vzc3F5cWFjIiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc0NTg1NzM2NCwiZXhwIjoyMDYxNDMzMzY0fQ.IC28ip8ky-qdHZkhoND-GUh1fY_y2H6qSxIGdD5WqS4")
 
 # Verify that essential keys are loaded
 if not OPENAI_API_KEY:
@@ -53,31 +54,43 @@ if not SUPABASE_SERVICE_ROLE_KEY:
 if not SUPABASE_ANON_KEY:
     logger.warning("SUPABASE_ANON_KEY is not set. Supabase interactions might fail.")
 
+# Initialize the PostgreSQL connection pool
+# This needs to be done after DATABASE_URL is loaded
+try:
+    db_pool = psycopg2.pool.SimpleConnectionPool(
+        1, 10,  # min and max connections
+        dsn=DATABASE_URL,
+        sslmode="require"
+    )
+    logger.info("Database connection pool initialized.")
+except Exception as e:
+    logger.error(f"Failed to initialize database connection pool: {e}")
+    db_pool = None # Set to None if initialization fails
 
 # Set OpenAI API key
 openai.api_key = OPENAI_API_KEY
 
 # --- Database Abstraction for Postgres ---
 class DBClient:
-    def __init__(self, connection_string):
-        self.connection_string = connection_string
+    def __init__(self):
+        # No need to store connection_string as it's used by the global db_pool
+        pass
 
     def _get_connection(self):
-        """Establishes and returns a database connection."""
-        try:
-            return psycopg2.connect(self.connection_string, sslmode='require')
-        except OperationalError as e:
-            logger.error(f"Database connection failed: {e}")
-            raise # Re-raise to be caught by the route's exception handler
+        """Gets a connection from the global database pool."""
+        if db_pool:
+            return db_pool.getconn()
+        raise Exception("Database connection pool not initialized")
 
     def delete_many(self, table_name, filter_criteria):
         """
         Deletes multiple records from a table based on criteria.
+        Uses connection from pool and returns it.
         WARNING: This is a simplified example. For production, ensure
         SQL injection prevention (e.g., using an ORM or a more robust
         parameterized query builder for dynamic WHERE clauses).
         """
-        conn = None
+        conn = None 
         try:
             conn = self._get_connection()
             cursor = conn.cursor()
@@ -97,25 +110,23 @@ class DBClient:
             return cursor.rowcount
         except Exception as e:
             logger.error(f"Error deleting from {table_name}: {e}")
-            if conn:
+            if conn: # Ensure conn exists before rollback
                 conn.rollback()
             raise
         finally:
             if conn:
-                cursor.close()
-                conn.close()
+                db_pool.putconn(conn) # Return connection to pool
 
     def delete_one(self, table_name, filter_criteria):
         """
         Deletes a single record from a table based on criteria.
         This simply calls delete_many with the understanding that the filter
-        criteria should ideally result in one record. For a strict "delete one",
-        you might add a LIMIT 1 to the SQL if your primary keys aren't always used.
+        criteria should ideally result in one record.
         """
         return self.delete_many(table_name, filter_criteria)
 
 # Initialize your database client
-db = DBClient(DATABASE_URL)
+db = DBClient()
 
 
 # --- Authentication Middleware (Updated for decorator pattern) ---
@@ -665,8 +676,8 @@ def analyze_photo(current_user=None): # Accept current_user
 
     logger.info("📸 /photo-analyze: Analyzing image for labels and text")
 
-    labels = get_image_labels(base64_image)
-    detected_text = get_image_text(base64_image)
+    labels = get_image_labels(image_base64)
+    detected_text = get_image_text(image_base64)
 
     image_description_for_llm = f"The image provides visual cues: {', '.join(labels)}."
     if detected_text:
@@ -846,8 +857,6 @@ def get_history(current_user=None): # Accept current_user
         logger.exception("Exception while fetching history")
         return jsonify({"error": str(e)}), 500
 
-
-
 @app.route("/delete-account", methods=["POST"])
 @token_required
 def delete_account(current_user): # current_user is passed by the token_required decorator
@@ -865,16 +874,40 @@ def delete_account(current_user): # current_user is passed by the token_required
         logger.error("SUPABASE_URL is not set in environment variables.")
         return jsonify({"error": "Server configuration error: Supabase URL missing."}), 500
 
+    # Retry logic for database operations for custom tables
+    for attempt in range(2): # Try up to 2 times
+        try:
+            # Delete from your own tables
+            db.delete_many("medications", {"user_id": user_id})
+            db.delete_many("appointments", {"user_id": user_id})
+            db.delete_one("profiles", {"user_id": user_id})
+            logger.info(f"Deleted user data from custom tables for user_id: {user_id}")
+            break # If successful, break out of the retry loop
+        except psycopg2.OperationalError as e:
+            logger.warning(f"Database connection error (attempt {attempt+1}): {e}. Reinitializing DB pool.")
+            global db_pool # Declare global to reassign the pool
+            if db_pool: 
+                db_pool.closeall()
+            # Reinitialize the pool. This assumes DATABASE_URL is accessible here.
+            try:
+                db_pool = psycopg2.pool.SimpleConnectionPool(1, 10, dsn=DATABASE_URL, sslmode="require")
+                logger.info("Database connection pool reinitialized successfully.")
+            except Exception as pool_e:
+                logger.error(f"Failed to reinitialize database connection pool: {pool_e}")
+                db_pool = None # Ensure it's None if reinitialization fails
+                if attempt == 1: # If this was the last attempt and reinitialization failed
+                    logger.error("Failed to reinitialize database pool after retries.")
+                    return jsonify({"error": "Failed to reinitialize database pool, cannot proceed with user data deletion."}), 500
+
+            if attempt == 1: # If this was the last attempt and we still hit an OperationalError
+                logger.error("Failed to connect to database after retries.")
+                return jsonify({"error": "Failed to connect to database for user data deletion."}), 500
+        except Exception as e:
+            logger.exception(f"Error during account deletion from custom tables for user_id: {user_id}")
+            return jsonify({"error": f"Failed to delete user data from custom tables: {str(e)}"}), 500
+
 
     try:
-        # Delete from your own tables
-        # Assuming `db` is an initialized database client that can perform deletions.
-        # You'll need to implement these methods based on your ORM or direct DB access.
-        db.delete_many("medications", {"user_id": user_id})
-        db.delete_many("appointments", {"user_id": user_id})
-        db.delete_one("profiles", {"user_id": user_id})
-        logger.info(f"Deleted user data from custom tables for user_id: {user_id}")
-
         # Delete from Supabase Auth (REAL DELETE)
         headers = {
             "apikey": SUPABASE_SERVICE_ROLE_KEY,
@@ -956,14 +989,14 @@ def verify_password_reset():
 
     if access_token and refresh_token:
         # IMPORTANT: Replace with your actual frontend password reset URL
-        frontend_reset_url = "[https://askdocapp-92cc3.web.app/reset-password.html](https://askdocapp-92cc3.web.app/reset-password.html)" 
+        frontend_reset_url = "https://askdocapp-92cc3.web.app/reset-password.html" 
         full_redirect_url = f"{frontend_reset_url}#access_token={access_token}&refresh_token={refresh_token}"
         logger.info(f"Redirecting to frontend reset page: {full_redirect_url}")
         return redirect(full_redirect_url)
     else:
         logger.warning("Missing access_token or refresh_token in /verify-password-reset. Redirecting to error.")
         # IMPORTANT: Replace with your actual frontend error page or a default route
-        return redirect("[https://askdocapp-92cc3.web.app/reset-password.html?error=invalid_link](https://askdocapp-92cc3.web.app/reset-password.html?error=invalid_link)")
+        return redirect("https://askdocapp-92cc3.web.app/reset-password.html?error=invalid_link")
 
 
 if __name__ == '__main__':
