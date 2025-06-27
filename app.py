@@ -818,6 +818,42 @@ def request_password_reset(current_user=None): # Accept current_user
     except Exception as e:
         logger.error(f"Unexpected error in /request-password-reset: {e}")
         return jsonify({"error": "An unexpected error occurred."}), 500
+@app.route("/api/delete-account", methods=["POST"])
+@cross_origin()
+@token_required
+def delete_account(current_user=None):
+    try:
+        data = request.get_json()
+        user_id = data.get("user_id")
+
+        if not user_id:
+            return jsonify({"error": "Missing user_id"}), 400
+
+        # Delete user profile
+        profile_url = f"{SUPABASE_URL}/rest/v1/profiles?user_id=eq.{user_id}"
+        history_url = f"{SUPABASE_URL}/rest/v1/history?user_id=eq.{user_id}"
+
+        headers = {
+            "apikey": SUPABASE_ANON_KEY,
+            "Authorization": f"Bearer {SUPABASE_ANON_KEY}",
+            "Prefer": "return=representation"
+        }
+
+        profile_response = requests.delete(profile_url, headers=headers)
+        history_response = requests.delete(history_url, headers=headers)
+
+        # Log results
+        logger.info(f"Delete profile response: {profile_response.status_code}")
+        logger.info(f"Delete history response: {history_response.status_code}")
+
+        if profile_response.status_code not in [200, 204] or history_response.status_code not in [200, 204]:
+            return jsonify({"error": "Failed to delete some data"}), 500
+
+        return jsonify({"success": True, "message": "Account and history deleted successfully."}), 200
+
+    except Exception as e:
+        logger.exception("Error deleting account")
+        return jsonify({"error": "Internal server error", "details": str(e)}), 500
 
 
 @app.route("/verify-password-reset", methods=["GET"])
