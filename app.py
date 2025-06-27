@@ -775,33 +775,20 @@ def get_history(current_user=None): # Accept current_user
         logger.exception("Exception while fetching history")
         return jsonify({"error": str(e)}), 500
 
-@app.route("/delete-account", methods=["POST"])
+@app.route("/delete-account", methods=["DELETE"])
 @token_required
-def delete_account(current_user=None):
-    data = request.get_json()
-    user_id = data.get("user_id")
-
-    if not user_id:
-        return jsonify({"success": False, "error": "Missing user_id"}), 400
-
+def delete_account(current_user):
     try:
-        # Delete user from Supabase Auth
-        # This method raises an exception on failure, returns None on success
-        supabase.auth.admin.delete_user(user_id)
-        logger.info(f"Supabase Auth user {user_id} deleted successfully.")
+        # Delete profile first (if it exists)
+        supabase.table("profiles").delete().eq("user_id", current_user["id"]).execute()
 
-        # Optionally: delete from your user profile table too
-        # Ensure your 'profiles' table has a 'user_id' column that matches auth.users.id
-        profile_delete_response = supabase.table("profiles").delete().eq("user_id", user_id).execute()
-        logger.info(f"Supabase Profiles table deletion response: {profile_delete_response.data}")
+        # Delete the user from Supabase Auth via Admin API
+        admin_response = supabase.auth.admin.delete_user(current_user["id"])
 
-        # You might want to check profile_delete_response for specific errors if necessary,
-        # but for a simple delete, it will generally succeed if the auth delete succeeds.
-
-        return jsonify({"success": True, "message": "Account deleted successfully."})
+        return jsonify({"message": "Account deleted"}), 200
     except Exception as e:
-        logger.error(f"Account deletion error for user {user_id}: {str(e)}")
-        return jsonify({"success": False, "error": f"Failed to delete account: {str(e)}"}), 500
+        print("Error deleting account:", e)
+        return jsonify({"error": "Account deletion failed"}), 500
 
 
 # --- NEW PASSWORD RESET ENDPOINTS ---
