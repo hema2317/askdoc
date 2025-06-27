@@ -34,9 +34,9 @@ API_AUTH_TOKEN = os.getenv("API_AUTH_TOKEN") # The secret token expected from fr
 # Supabase Project URL and Anon Key
 SUPABASE_URL = os.getenv("SUPABASE_URL", "https://nlfvwbjpeywcessqyqac.supabase.co")
 # IMPORTANT: Replace with your actual SUPABASE_ANON_KEY from your .env or Supabase project settings
-SUPABASE_ANON_KEY = os.getenv("SUPABASE_ANON_KEY", "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im5sZnZ3YmpwZXl3Y2Vzc3F5cWFjIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NDU4NTczNjQsImV4cCI6MjA2MTQzMzM2NH0.zL84P7bK7qHxJt8MtkTPkqNe4U_K512ZgtpPvD9PoRI")
+SUPABASE_ANON_KEY = os.getenv("SUPABASE_ANON_KEY", "YOUR_ACTUAL_SUPABASE_ANON_KEY_HERE")
 # IMPORTANT: Replace with your actual SUPABASE_SERVICE_ROLE_KEY from your .env or Supabase project settings
-SUPABASE_SERVICE_ROLE_KEY = os.getenv("SUPABASE_SERVICE_ROLE_KEY", "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im5sZnZ3YmpwZXl3Y2Vzc3F5cWFjIiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc0NTg1NzM2NCwiZXhwIjoyMDYxNDMzMzY0fQ.IC28ip8ky-qdHZkhoND-GUh1fY_y2H6qSxIGdD5WqS4")
+SUPABASE_SERVICE_ROLE_KEY = os.getenv("SUPABASE_SERVICE_ROLE_KEY", "YOUR_ACTUAL_SUPABASE_SERVICE_ROLE_KEY_HERE")
 
 # Verify that essential keys are loaded
 if not OPENAI_API_KEY:
@@ -50,22 +50,22 @@ if not GOOGLE_VISION_API_KEY:
 if not API_AUTH_TOKEN:
     logger.warning("API_AUTH_TOKEN is not set.")
 if not SUPABASE_SERVICE_ROLE_KEY:
-    logger.warning("SUPABASE_SERVICE_ROLE_KEY is not set. Account deletion will not work.")
+    logger.warning("SUPABASE_SERVICE_ROLE_KEY is not set. Account deletion might be impacted.")
 if not SUPABASE_ANON_KEY:
     logger.warning("SUPABASE_ANON_KEY is not set. Supabase interactions might fail.")
 
-# Initialize the PostgreSQL connection pool
-# This needs to be done after DATABASE_URL is loaded
+# Initialize the PostgreSQL connection pool with a safe try/except
+db_pool = None # Initialize to None
 try:
     db_pool = psycopg2.pool.SimpleConnectionPool(
         1, 10,  # min and max connections
         dsn=DATABASE_URL,
         sslmode="require"
     )
-    logger.info("Database connection pool initialized.")
+    logger.info("✅ DB pool initialized")
 except Exception as e:
     logger.error(f"Failed to initialize database connection pool: {e}")
-    db_pool = None # Set to None if initialization fails
+    # db_pool remains None, which retry logic will handle
 
 # Set OpenAI API key
 openai.api_key = OPENAI_API_KEY
@@ -73,14 +73,14 @@ openai.api_key = OPENAI_API_KEY
 # --- Database Abstraction for Postgres ---
 class DBClient:
     def __init__(self):
-        # No need to store connection_string as it's used by the global db_pool
-        pass
+        pass # No need to store connection_string, handled by global db_pool
 
     def _get_connection(self):
         """Gets a connection from the global database pool."""
         if db_pool:
             return db_pool.getconn()
-        raise Exception("Database connection pool not initialized")
+        # If db_pool is None (failed initialization), raise an error immediately
+        raise Exception("Database connection pool not initialized or available.")
 
     def delete_many(self, table_name, filter_criteria):
         """
@@ -112,10 +112,10 @@ class DBClient:
             logger.error(f"Error deleting from {table_name}: {e}")
             if conn: # Ensure conn exists before rollback
                 conn.rollback()
-            raise
+            raise # Re-raise the exception to be caught by route-level retry logic
         finally:
-            if conn:
-                db_pool.putconn(conn) # Return connection to pool
+            if conn and db_pool: # Only return connection to pool if pool is valid
+                db_pool.putconn(conn)
 
     def delete_one(self, table_name, filter_criteria):
         """
@@ -883,27 +883,27 @@ def delete_account(current_user): # current_user is passed by the token_required
             db.delete_one("profiles", {"user_id": user_id})
             logger.info(f"Deleted user data from custom tables for user_id: {user_id}")
             break # If successful, break out of the retry loop
-        except psycopg2.OperationalError as e:
-            logger.warning(f"Database connection error (attempt {attempt+1}): {e}. Reinitializing DB pool.")
+        except (psycopg2.OperationalError, AttributeError) as e: # Catch AttributeError if db_pool is None
+            logger.warning(f"Retrying DB connection for custom table deletion due to: {e} (attempt {attempt+1})")
             global db_pool # Declare global to reassign the pool
-            if db_pool: 
+            if db_pool: # Only close if it exists
                 db_pool.closeall()
-            # Reinitialize the pool. This assumes DATABASE_URL is accessible here.
+            # Attempt to reinitialize the pool
             try:
                 db_pool = psycopg2.pool.SimpleConnectionPool(1, 10, dsn=DATABASE_URL, sslmode="require")
-                logger.info("Database connection pool reinitialized successfully.")
+                logger.info("Database connection pool reinitialized successfully for retry.")
             except Exception as pool_e:
-                logger.error(f"Failed to reinitialize database connection pool: {pool_e}")
+                logger.error(f"Failed to reinitialize database connection pool during retry: {pool_e}")
                 db_pool = None # Ensure it's None if reinitialization fails
                 if attempt == 1: # If this was the last attempt and reinitialization failed
-                    logger.error("Failed to reinitialize database pool after retries.")
+                    logger.error("Failed to reinitialize database pool after retries, cannot proceed with user data deletion.")
                     return jsonify({"error": "Failed to reinitialize database pool, cannot proceed with user data deletion."}), 500
 
-            if attempt == 1: # If this was the last attempt and we still hit an OperationalError
-                logger.error("Failed to connect to database after retries.")
-                return jsonify({"error": "Failed to connect to database for user data deletion."}), 500
-        except Exception as e:
-            logger.exception(f"Error during account deletion from custom tables for user_id: {user_id}")
+            if attempt == 1: # If this was the last attempt and we still hit an OperationalError/AttributeError
+                logger.error("Failed to connect to database for custom table deletion after retries.")
+                return jsonify({"error": "Failed to connect to database for custom table deletion."}), 500
+        except Exception as e: # Catch any other unexpected errors during custom table deletion
+            logger.exception(f"Unexpected error during custom table deletion for user_id: {user_id}")
             return jsonify({"error": f"Failed to delete user data from custom tables: {str(e)}"}), 500
 
 
