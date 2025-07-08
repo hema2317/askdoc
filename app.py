@@ -41,6 +41,11 @@ SUPABASE_ANON_KEY = os.getenv("SUPABASE_ANON_KEY", "eyJhbGciOiJIUzI1NiIsInR5cCI6
 
 openai.api_key = OPENAI_API_KEY
 
+@app.route("/")
+def health_check():
+    return "✅ AskDoc backend is running"
+
+
 # --- Authentication Middleware (Updated for decorator pattern) ---
 def token_required(f):
     @wraps(f)
