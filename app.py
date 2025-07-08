@@ -856,8 +856,13 @@ def delete_account(current_user=None):
         }
 
         delete_auth_url = f"{SUPABASE_URL}/auth/v1/admin/users/{user_id}"
-        auth_delete_response = requests.delete(delete_auth_url, headers=auth_headers)
 
+        logger.info(f"[🧨 Delete] Attempting to delete user: {user_id}")
+        logger.info(f"[Auth Headers] {auth_headers}")
+        logger.info(f"[Delete URL] {delete_auth_url}")
+
+        auth_delete_response = requests.delete(delete_auth_url, headers=auth_headers)
+        logger.info(f"[Auth DELETE] Status: {auth_delete_response.status_code}, Response: {auth_delete_response.text}")
         logger.info(f"Delete auth user response: {auth_delete_response.status_code}")
 
         if auth_delete_response.status_code != 204:
