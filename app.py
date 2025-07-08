@@ -821,7 +821,7 @@ def request_password_reset(current_user=None): # Accept current_user
 
 @app.route("/api/delete-account", methods=["POST"])
 @cross_origin()
-@token_required
+# @token_required
 def delete_account(current_user=None):
     try:
         data = request.get_json()
