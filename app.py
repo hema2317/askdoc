@@ -827,14 +827,14 @@ def delete_account(current_user=None):
         data = request.get_json()
         user_id = data.get("user_id")
 
-        logger.info(f"[DELETE] Request received for user_id: {user_id}")
+        print(f"[DELETE] Request received for user_id: {user_id}")
 
         if not user_id:
-            logger.warning("[DELETE] No user_id provided")
-            return jsonify({"error": "Missing user_id"}), 400
+            print("[DELETE] No user_id provided")
+            return jsonify({ "result": { "success": False, "error": "Missing user_id" }}), 400
 
-        # Step 1: Delete from Supabase profile and history
-        headers = {
+        # Step 1: Delete from Supabase tables
+        anon_headers = {
             "apikey": SUPABASE_ANON_KEY,
             "Authorization": f"Bearer {SUPABASE_ANON_KEY}",
             "Prefer": "return=representation"
@@ -843,40 +843,48 @@ def delete_account(current_user=None):
         profile_url = f"{SUPABASE_URL}/rest/v1/profiles?user_id=eq.{user_id}"
         history_url = f"{SUPABASE_URL}/rest/v1/history?user_id=eq.{user_id}"
 
-        logger.info(f"[DELETE] Hitting Supabase profiles: {profile_url}")
-        profile_response = requests.delete(profile_url, headers=headers)
+        profile_response = requests.delete(profile_url, headers=anon_headers)
+        history_response = requests.delete(history_url, headers=anon_headers)
 
-        logger.info(f"[DELETE] Hitting Supabase history: {history_url}")
-        history_response = requests.delete(history_url, headers=headers)
-
-        logger.info(f"[DELETE] Profiles deleted status: {profile_response.status_code}")
-        logger.info(f"[DELETE] History deleted status: {history_response.status_code}")
+        print(f"[DELETE] Profile status: {profile_response.status_code}")
+        print(f"[DELETE] History status: {history_response.status_code}")
 
         if profile_response.status_code not in [200, 204] or history_response.status_code not in [200, 204]:
-            return jsonify({"error": "Failed to delete some data"}), 500
+            return jsonify({ "result": { "success": False, "error": "Failed to delete profile or history." }}), 500
 
         # Step 2: Delete from Supabase Auth
-        auth_headers = {
+        service_headers = {
             "apikey": SUPABASE_SERVICE_ROLE_KEY,
             "Authorization": f"Bearer {SUPABASE_SERVICE_ROLE_KEY}",
             "Content-Type": "application/json"
         }
 
         delete_auth_url = f"{SUPABASE_URL}/auth/v1/admin/users/{user_id}"
-        logger.info(f"[DELETE] Attempting to delete Supabase Auth user at: {delete_auth_url}")
-        auth_delete_response = requests.delete(delete_auth_url, headers=auth_headers)
+        auth_response = requests.delete(delete_auth_url, headers=service_headers)
 
-        logger.info(f"[DELETE] Auth delete response: {auth_delete_response.status_code} - {auth_delete_response.text}")
+        print(f"[AUTH DELETE] Status: {auth_response.status_code}")
+        print(f"[AUTH DELETE] Body: {auth_response.text}")
 
-        if auth_delete_response.status_code != 204:
-            return jsonify({"error": "Failed to delete Auth user", "details": auth_delete_response.text}), 500
+        if auth_response.status_code != 204:
+            return jsonify({ "result": { "success": False, "error": "Failed to delete Supabase Auth user", "details": auth_response.text }}), 500
 
-        logger.info(f"[DELETE] ✅ Fully deleted account for user: {user_id}")
-        return jsonify({"success": True, "message": "Account and history deleted successfully."}), 200
+        return jsonify({
+            "result": {
+                "success": True,
+                "message": "Account and history deleted successfully."
+            }
+        }), 200
 
     except Exception as e:
-        logger.exception("Error deleting account")
-        return jsonify({"error": "Internal server error", "details": str(e)}), 500
+        print(f"[ERROR] Account deletion failed: {e}")
+        return jsonify({
+            "result": {
+                "success": False,
+                "error": "Internal server error",
+                "details": str(e)
+            }
+        }), 500
+
 
 
 @app.route("/verify-password-reset", methods=["GET"])
