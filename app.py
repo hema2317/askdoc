@@ -818,6 +818,7 @@ def request_password_reset(current_user=None): # Accept current_user
     except Exception as e:
         logger.error(f"Unexpected error in /request-password-reset: {e}")
         return jsonify({"error": "An unexpected error occurred."}), 500
+
 @app.route("/api/delete-account", methods=["POST"])
 @cross_origin()
 @token_required
@@ -826,10 +827,13 @@ def delete_account(current_user=None):
         data = request.get_json()
         user_id = data.get("user_id")
 
+        logger.info(f"[DELETE] Request received for user_id: {user_id}")
+
         if not user_id:
+            logger.warning("[DELETE] No user_id provided")
             return jsonify({"error": "Missing user_id"}), 400
 
-        # Delete profile and history from Supabase tables
+        # Step 1: Delete from Supabase profile and history
         headers = {
             "apikey": SUPABASE_ANON_KEY,
             "Authorization": f"Bearer {SUPABASE_ANON_KEY}",
@@ -839,16 +843,19 @@ def delete_account(current_user=None):
         profile_url = f"{SUPABASE_URL}/rest/v1/profiles?user_id=eq.{user_id}"
         history_url = f"{SUPABASE_URL}/rest/v1/history?user_id=eq.{user_id}"
 
+        logger.info(f"[DELETE] Hitting Supabase profiles: {profile_url}")
         profile_response = requests.delete(profile_url, headers=headers)
+
+        logger.info(f"[DELETE] Hitting Supabase history: {history_url}")
         history_response = requests.delete(history_url, headers=headers)
 
-        logger.info(f"Delete profile response: {profile_response.status_code}")
-        logger.info(f"Delete history response: {history_response.status_code}")
+        logger.info(f"[DELETE] Profiles deleted status: {profile_response.status_code}")
+        logger.info(f"[DELETE] History deleted status: {history_response.status_code}")
 
         if profile_response.status_code not in [200, 204] or history_response.status_code not in [200, 204]:
             return jsonify({"error": "Failed to delete some data"}), 500
 
-        # 🔐 DELETE Supabase Auth user
+        # Step 2: Delete from Supabase Auth
         auth_headers = {
             "apikey": SUPABASE_SERVICE_ROLE_KEY,
             "Authorization": f"Bearer {SUPABASE_SERVICE_ROLE_KEY}",
@@ -856,18 +863,15 @@ def delete_account(current_user=None):
         }
 
         delete_auth_url = f"{SUPABASE_URL}/auth/v1/admin/users/{user_id}"
-
-        logger.info(f"[🧨 Delete] Attempting to delete user: {user_id}")
-        logger.info(f"[Auth Headers] {auth_headers}")
-        logger.info(f"[Delete URL] {delete_auth_url}")
-
+        logger.info(f"[DELETE] Attempting to delete Supabase Auth user at: {delete_auth_url}")
         auth_delete_response = requests.delete(delete_auth_url, headers=auth_headers)
-        logger.info(f"[Auth DELETE] Status: {auth_delete_response.status_code}, Response: {auth_delete_response.text}")
-        logger.info(f"Delete auth user response: {auth_delete_response.status_code}")
+
+        logger.info(f"[DELETE] Auth delete response: {auth_delete_response.status_code} - {auth_delete_response.text}")
 
         if auth_delete_response.status_code != 204:
             return jsonify({"error": "Failed to delete Auth user", "details": auth_delete_response.text}), 500
 
+        logger.info(f"[DELETE] ✅ Fully deleted account for user: {user_id}")
         return jsonify({"success": True, "message": "Account and history deleted successfully."}), 200
 
     except Exception as e:
