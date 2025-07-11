@@ -4,10 +4,10 @@ import json
 import logging
 import re
 from datetime import datetime
-from functools import wraps # Import functools for decorators
+from functools import wraps
 
-from flask import Flask, request, jsonify, redirect, url_for, make_response # Import make_response for decorator
-from flask_cors import CORS, cross_origin # Ensure cross_origin is imported
+from flask import Flask, request, jsonify, redirect, url_for, make_response
+from flask_cors import CORS, cross_origin
 import openai
 import requests
 import psycopg2
@@ -15,9 +15,11 @@ from psycopg2 import OperationalError
 import base64
 from dotenv import load_dotenv
 
-load_dotenv() # ✅ Load environment variables
+load_dotenv() # Load environment variables from .env file
 
-app = Flask(__name__) # ✅ Define app only once
+app = Flask(__name__)
+# Ensure CORS is configured to allow all origins for development.
+# For production, restrict 'origins' to your frontend domain.
 CORS(app, resources={r"/*": {"origins": "*"}})
 
 logging.basicConfig(level=logging.INFO)
@@ -30,37 +32,31 @@ GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")
 GOOGLE_VISION_API_KEY = os.getenv("GOOGLE_VISION_API_KEY")
 API_AUTH_TOKEN = os.getenv("API_AUTH_TOKEN") # The secret token expected from frontend
 
-# Supabase Project URL and Anon Key (from your frontend code)
+# Supabase Project URL and Anon Key
 SUPABASE_URL = os.getenv("SUPABASE_URL", "https://nlfvwbjpeywcessqyqac.supabase.co")
-# IMPORTANT: Double-check this SUPABASE_ANON_KEY. The one in your traceback looks different from a valid anon key format.
-# It should be a long string starting with 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...'
-# Your previous snippet had: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im5sZnZ3YmpwZXl3Y2Vzc3F5cWFjIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NDU4NTczNjQsImV4cCI6MjA2MTQzMzM2NH0.zL84P7bK7qHxJt8MtkTPkqNe4U_K512ZgtpPvD9PoRI"
-# Which looked more correct.
-SUPABASE_ANON_KEY = os.getenv("SUPABASE_ANON_KEY", "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im5sZnZ3YmpwZXl3Y2Vzc3F5cWFjIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NDU4NTczNjQsImV4cCI6MjA2MTQzMzM2NH0.zL84P7bK7qHxJt8MtkTPkqNe4U_K512ZgtpPvD9PoRI")
-SUPABASE_SERVICE_ROLE_KEY = os.getenv("SUPABASE_SERVICE_ROLE_KEY", "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im5sZnZ3YmpwZXl3Y2Vzc3F5cWFjIiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc0NTg1NzM2NCwiZXhwIjoyMDYxNDMzMzY0fQ.IC28ip8ky-qdHZkhoND-GUh1fY_y2H6qSxIGdD5WqS4")
+SUPABASE_ANON_KEY = os.getenv("SUPABASE_ANON_KEY", "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im5sZnZ3YmpwZXl3Y2Vzc3F5cWFjIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NDU4NTczNjQsImV4cCI6MjA2MTQzMzM2NH0.zL84P7bK7qHxJt8MtkTPkqNe4U_K512ZgtpPvD9PoRI") # Replace with your actual key
+SUPABASE_SERVICE_ROLE_KEY = os.getenv("SUPABASE_SERVICE_ROLE_KEY", "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im5sZnZ3YmpwZXl3Y2Vzc3F5cWFjIiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc0NTg1NzM2NCwiZXhwIjoyMDYxNDMzMzY0fQ.IC28ip8ky-qdHZkhoND-GUh1fY_y2H6qSxIGdD5WqS4") # Replace with your actual key
 
-
-
+# Set OpenAI API key
 openai.api_key = OPENAI_API_KEY
 
 @app.route("/")
 def health_check():
     return "✅ AskDoc backend is running"
 
-
-# --- Authentication Middleware (Updated for decorator pattern) ---
+# --- Authentication Middleware ---
 def token_required(f):
     @wraps(f)
     def decorated(*args, **kwargs):
         auth_header = request.headers.get("Authorization")
         if not auth_header or not auth_header.startswith("Bearer "):
             logger.warning(f"Unauthorized access attempt: No Bearer token provided or malformed header.")
-            return make_response(jsonify({"error": "Unauthorized: Bearer token missing or malformed"}), 401) # Use make_response
+            return make_response(jsonify({"error": "Unauthorized: Bearer token missing or malformed"}), 401)
 
         token = auth_header.split(" ")[1] # Extract the token part
         if token != API_AUTH_TOKEN:
             logger.warning(f"Unauthorized access attempt: Invalid API token. Provided: {token}")
-            return make_response(jsonify({"error": "Unauthorized: Invalid API token"}), 401) # Use make_response
+            return make_response(jsonify({"error": "Unauthorized: Invalid API token"}), 401)
         
         # In a real app, you'd verify the JWT token here and extract user_id.
         # For this example, we'll pass a dummy current_user.
@@ -148,7 +144,8 @@ def generate_openai_response(user_input_text, language, profile_context, prompt_
     - Temperature: Oral ~98.6°F (37°C). Fever generally >100.4°F (38°C).
     """
 
-    base_prompt = f"""
+    # ✅ UPDATED PROMPT FOR MEDICATION EXTRACTION AND STRICT JSON FORMAT
+    system_prompt = f"""
     You are a highly knowledgeable, empathetic, and responsible virtual health assistant. Your role is to act as a compassionate nurse or health educator.
     You must *always* provide information that is easy to understand for a layperson.
     Your initial greeting must *always* be a disclaimer.
@@ -174,14 +171,14 @@ def generate_openai_response(user_input_text, language, profile_context, prompt_
     4.  immediate_action: What the person should *do immediately* or in the very short term. Be specific, actionable, and prioritize safety.
     5.  nurse_tips: **Proactive education and practical advice, like a nurse would provide.** This is where you significantly personalize guidance based on their profile. Include prevention, monitoring, or lifestyle advice tailored to their known conditions, habits (smoking, drinking, exercise), or family history.
     6.  remedies: General suggestions for self-care or lifestyle adjustments for recovery or management.
-    7.  medicines: Common over-the-counter or general types of prescribed medications *related to the condition*. **Explicitly state this is NOT a prescription and they must consult a doctor.**
+    7.  medications: (NEW) An array of objects, where each object has "name" (string), "dose" (string), and "time" (string, e.g., "morning", "before bed", "as needed"). If no specific medications are directly suggested or detected, return an empty array [].
     8.  urgency: Categorize the urgency (e.g., 'Immediate Emergency', 'Urgent Consult', 'Moderate', 'Low').
     9.  suggested_doctor: The type of medical specialist they might need to see.
     10. nursing_explanation: A simplified nursing explanation of the condition or situation.
     11. personal_notes: Any additional personalized notes or considerations for the user.
     12. relevant_information: Any other relevant health information or context.
     13. hipaa_disclaimer: The exact disclaimer text: "Disclaimer: I am a virtual AI assistant and not a medical doctor. This information is for educational purposes only and is not a substitute for professional medical advice. Always consult a qualified healthcare provider for diagnosis and treatment."
-    14. citations: (NEW) An array of objects, where each object has "title" (string) and "url" (string) for source links. Provide at least 2-3 credible sources relevant to the generated analysis (e.g., Mayo Clinic, CDC, WebMD). If no specific source is directly applicable, return an empty array.
+    14. citations: An array of objects, where each object has "title" (string) and "url" (string) for source links. Provide at least 2-3 credible sources relevant to the generated analysis (e.g., Mayo Clinic, CDC, WebMD). If no specific source is directly applicable, return an empty array [].
     """
 
     if prompt_type == "symptoms":
@@ -193,21 +190,21 @@ def generate_openai_response(user_input_text, language, profile_context, prompt_
     else:
         user_content = f"Input: \"{user_input_text}\""
 
-    full_prompt = base_prompt + f"\n--- User's Input ---\n{user_content}"
+    full_user_message = system_prompt + f"\n--- User's Input ---\n{user_content}"
     
     try:
         response = openai.ChatCompletion.create(
             model="gpt-4o", # Recommended for better JSON reliability, gpt-3.5-turbo might be less consistent
             messages=[
-                {"role": "system", "content": "You are a helpful multilingual health assistant. Adhere strictly to the requested JSON format. Provide citations in the 'citations' array."},
-                {"role": "user", "content": full_prompt}
+                {"role": "system", "content": "You are a helpful multilingual health assistant. Adhere strictly to the requested JSON format."}, # Shorter system role as the main prompt has everything
+                {"role": "user", "content": full_user_message} # Pass the entire detailed prompt as user content
             ],
             temperature=0.4, # Keep temperature low for factual consistency
-            response_format={"type": "json_object"} # Explicitly request JSON object (for newer OpenAI versions)
+            response_format={"type": "json_object"} # Explicitly request JSON object
         )
         return response['choices'][0]['message']['content']
-    except openai.APIError as e: # Use openai.APIError for new versions
-        logger.error(f"OpenAI API error: {e.status_code} - {e.response}")
+    except openai.APIError as e:
+        logger.error(f"OpenAI API error: Status {e.status_code}, Response: {e.response}")
         return None
     except Exception as e:
         logger.error(f"Error in generate_openai_response: {e}")
@@ -217,11 +214,10 @@ def parse_openai_json(reply):
     """
     Parses the JSON string from OpenAI's reply.
     It's robust to cases where the reply might contain extra text outside the JSON block.
-    Ensures 'remedies' and 'medicines' are always lists, and adds default for new fields.
+    Ensures 'remedies', 'medicines', and 'citations' are always lists, and adds defaults for new fields.
     """
     try:
         # Try to find a JSON block wrapped in markdown code fences first
-        # FIX: Ensure regex pattern is correctly formed as a multiline string
         match = re.search(r'```json\s*(\{.*?\})\s*```', reply, re.DOTALL)
         if match:
             json_str = match.group(1)
@@ -232,25 +228,45 @@ def parse_openai_json(reply):
             
         parsed_data = json.loads(json_str)
 
+        # Ensure 'remedies' is a list
         remedies = parsed_data.get('remedies')
         if not isinstance(remedies, list):
             parsed_data['remedies'] = [remedies] if remedies else []
             
+        # Ensure 'medicines' is a list of dicts
         medicines = parsed_data.get('medicines')
         if not isinstance(medicines, list):
-            parsed_data['medicines'] = [medicines] if medicines else []
+            # If it's a single dict, put it in a list. If something else, make it empty.
+            parsed_data['medicines'] = [medicines] if isinstance(medicines, dict) else []
+        # Further ensure each item in medicines list is a dict
+        parsed_data['medicines'] = [m for m in parsed_data['medicines'] if isinstance(m, dict)]
 
+        # Ensure 'citations' is a list of dicts
+        citations = parsed_data.get('citations')
+        if not isinstance(citations, list):
+            parsed_data['citations'] = [citations] if isinstance(citations, dict) else []
+        parsed_data['citations'] = [c for c in parsed_data['citations'] if isinstance(c, dict)]
+
+
+        # Set default values for all expected keys if they are missing
+        parsed_data.setdefault('detected_condition', 'Unsure')
+        parsed_data.setdefault('medical_analysis', 'I could not find anything specific.')
+        parsed_data.setdefault('why_happening_explanation', 'Not provided.')
+        parsed_data.setdefault('immediate_action', 'Consult a healthcare professional.')
+        parsed_data.setdefault('nurse_tips', 'Always seek medical advice from a qualified doctor.')
+        parsed_data.setdefault('urgency', 'Low')
+        parsed_data.setdefault('suggested_doctor', 'General Practitioner')
         parsed_data.setdefault('nursing_explanation', 'Not provided.')
         parsed_data.setdefault('personal_notes', 'Not provided.')
         parsed_data.setdefault('relevant_information', 'Not provided.')
-        parsed_data.setdefault('why_happening_explanation', 'Not provided.')
-        parsed_data.setdefault('immediate_action', 'Not provided.')
-        parsed_data.setdefault('nurse_tips', 'Not provided.')
-        parsed_data.setdefault('citations', [])
-
+        parsed_data.setdefault('hipaa_disclaimer', "Disclaimer: I am a virtual AI assistant and not a medical doctor. This information is for educational purposes only and is not a substitute for professional medical advice. Always consult a qualified healthcare provider for diagnosis and treatment.")
+        parsed_data.setdefault('citations', []) # Ensure this is always a list
+        parsed_data.setdefault('medications', []) # Ensure this is always a list
+        
         return parsed_data
     except json.JSONDecodeError as e:
         logger.error(f"JSON parsing failed: {e}. Raw reply: {reply}")
+        # Return a fallback structured response
         return {
             "medical_analysis": "I'm sorry, I couldn't fully process the request. Please try again or rephrase your symptoms. (JSON Parse Error)",
             "root_cause": "Parsing error or unclear AI response.",
@@ -264,6 +280,7 @@ def parse_openai_json(reply):
         }
     except Exception as e:
         logger.error(f"Unexpected error in JSON parsing: {e}")
+        # Return a fallback structured response for unexpected errors
         return {
             "medical_analysis": "An unexpected error occurred during analysis. Please try again. (Unknown Error)",
             "root_cause": "Unknown error.",
@@ -275,6 +292,7 @@ def parse_openai_json(reply):
             "nursing_explanation": "Not provided.", "personal_notes": "Not provided.", "relevant_information": "Not provided.",
             "citations": []
         }
+
 @app.route("/api/doctors", methods=["POST"])
 @cross_origin()
 @token_required
@@ -374,7 +392,7 @@ def get_nearby_doctors(specialty, location):
                 "address": place_vicinity,
                 "rating": place.get("rating"),
                 "open_now": open_now,
-                "phone": place.get("international_phone_number"),
+                "phone": place.get("international_phone_number"), # This field is often not returned by Nearby Search
                 "maps_link": maps_link
             })
         return doctors
@@ -442,8 +460,8 @@ def health():
 
 @app.route("/analyze", methods=["POST"])
 @cross_origin()
-@token_required # Apply the decorator directly
-def analyze_symptoms(current_user=None): # Accept current_user
+@token_required
+def analyze_symptoms(current_user=None):
     try:
         data = request.get_json()
         symptoms = data.get('symptoms')
@@ -461,7 +479,7 @@ def analyze_symptoms(current_user=None): # Accept current_user
         if not ai_response:
             return jsonify({"error": "AI analysis failed to generate response from OpenAI"}), 500
             
-        result = parse_openai_json(ai_response)
+        result = parse_openai_json(ai_response) # ✅ This will now parse 'medications' too
 
         if location and result.get("suggested_doctor"):
             result["nearby_doctors"] = get_nearby_doctors(result["suggested_doctor"], location)
@@ -472,7 +490,7 @@ def analyze_symptoms(current_user=None): # Accept current_user
 
     except Exception as e:
         logger.exception("Error in /analyze route")
-        return jsonify({'error': 'Failed to analyze symptoms'}), 500
+        return jsonify({'error': 'Failed to analyze symptoms', "details": str(e)}), 500
         
 @app.route('/analyze-trends', methods=['POST'])
 @cross_origin()
@@ -487,7 +505,7 @@ def analyze_trends(current_user=None):
         if not symptoms or not isinstance(symptoms, list):
             logger.error("Missing or invalid symptom data for trend analysis.")
             return jsonify({"error": "Missing or invalid symptom data"}), 400
-        
+            
         trend_input = "User's Symptom Timeline:\n"
         for entry in symptoms:
             date = entry.get("date", "N/A")
@@ -565,8 +583,8 @@ Citations: [Title](URL), [Title](URL)
 
 @app.route("/api/ask", methods=["POST"])
 @cross_origin()
-@token_required # Apply the decorator directly
-def ask(current_user=None): # Accept current_user
+@token_required
+def ask(current_user=None):
     data = request.get_json()
     question = data.get("question", "")
     if not question:
@@ -590,8 +608,8 @@ def ask(current_user=None): # Accept current_user
 
 @app.route("/photo-analyze", methods=["POST"])
 @cross_origin()
-@token_required # Apply the decorator directly
-def analyze_photo(current_user=None): # Accept current_user
+@token_required
+def analyze_photo(current_user=None):
     data = request.get_json()
     image_base64 = data.get("image_base64")
     profile_data = data.get("profile", {})
@@ -630,8 +648,8 @@ def analyze_photo(current_user=None): # Accept current_user
 
 @app.route("/analyze-lab-report", methods=["POST"])
 @cross_origin()
-@token_required # Apply the decorator directly
-def analyze_lab_report(current_user=None): # Accept current_user
+@token_required
+def analyze_lab_report(current_user=None):
     data = request.get_json()
     image_base64 = data.get("image_base64")
     extracted_text_from_frontend = data.get("extracted_text", "")
@@ -673,8 +691,8 @@ def analyze_lab_report(current_user=None): # Accept current_user
 
 @app.route('/api/history', methods=['POST'])
 @cross_origin()
-@token_required # Apply the decorator directly
-def save_history(current_user=None): # Accept current_user
+@token_required
+def save_history(current_user=None):
     try:
         data = request.get_json()
         user_id = data.get('user_id')
@@ -684,18 +702,26 @@ def save_history(current_user=None): # Accept current_user
         if not user_id or not query or not response:
             return jsonify({"error": "Missing user_id, query, or response"}), 400
 
+        # Ensure response is a dict; if it's a string, try to parse it
         parsed_response = response if isinstance(response, dict) else json.loads(response)
 
+        # Safely get and ensure list types for nested fields
         medicines = parsed_response.get("medicines")
         remedies = parsed_response.get("remedies")
         citations = parsed_response.get("citations")
 
+        # Normalize these fields to always be lists
         if not isinstance(medicines, list):
-            medicines = [medicines] if medicines else []
+            medicines = [medicines] if isinstance(medicines, dict) else [] # Handle single dict if AI gave it
         if not isinstance(remedies, list):
             remedies = [remedies] if remedies else []
         if not isinstance(citations, list):
-            citations = [citations] if citations else []
+            citations = [citations] if isinstance(citations, dict) else [] # Handle single dict if AI gave it
+        
+        # Ensure that items within the list are of expected type (e.g., dict for medications/citations)
+        medicines = [m for m in medicines if isinstance(m, dict)]
+        citations = [c for c in citations if isinstance(c, dict)]
+
 
         payload = {
             "id": str(uuid.uuid4()),
@@ -705,9 +731,9 @@ def save_history(current_user=None): # Accept current_user
             "medical_analysis": parsed_response.get("medical_analysis"),
             "remedies": remedies,
             "urgency": parsed_response.get("urgency"),
-            "medicines": medicines,
+            "medicines": medicines, # ✅ Use the normalized medicines list
             "suggested_doctor": parsed_response.get("suggested_doctor"),
-            "raw_text": json.dumps(parsed_response),
+            "raw_text": json.dumps(parsed_response), # Save the full AI response for debugging/re-parsing if needed
             "timestamp": datetime.utcnow().isoformat(),
             "nursing_explanation": parsed_response.get("nursing_explanation"),
             "personal_notes": parsed_response.get("personal_notes"),
@@ -715,7 +741,7 @@ def save_history(current_user=None): # Accept current_user
             "why_happening_explanation": parsed_response.get("why_happening_explanation"),
             "immediate_action": parsed_response.get("immediate_action"),
             "nurse_tips": parsed_response.get("nurse_tips"),
-            "citations": citations
+            "citations": citations # ✅ Use the normalized citations list
         }
 
         logger.info(f"Saving history for user_id: {user_id}")
@@ -740,11 +766,10 @@ def save_history(current_user=None): # Accept current_user
         return jsonify({"error": str(e)}), 500
 
 
-
 @app.route('/api/history', methods=['GET'])
 @cross_origin()
-@token_required # Apply the decorator directly
-def get_history(current_user=None): # Accept current_user
+@token_required
+def get_history(current_user=None):
     user_id = request.args.get('user_id')
     if not user_id:
         return jsonify({"error": "Missing user_id"}), 400
@@ -767,16 +792,25 @@ def get_history(current_user=None): # Accept current_user
             if 'raw_text' in entry and isinstance(entry['raw_text'], str):
                 try:
                     entry['response'] = json.loads(entry['raw_text'])
+                    # Ensure citations, medications are lists when retrieved from raw_text
                     if 'citations' in entry['response'] and not isinstance(entry['response']['citations'], list):
                         entry['response']['citations'] = [entry['response']['citations']]
+                    if 'medications' in entry['response'] and not isinstance(entry['response']['medications'], list):
+                        entry['response']['medications'] = [entry['response']['medications']]
                 except json.JSONDecodeError:
-                    logger.warning(f"Failed to parse raw_text for history entry {entry.get('id')}")
-                    entry['response'] = {}
+                    logger.warning(f"Failed to parse raw_text for history entry {entry.get('id')}. Setting response to empty dict.")
+                    entry['response'] = {} # Fallback to empty dict
             else:
-                entry['response'] = entry.get('response', {}) 
+                # If raw_text not present or not string, use existing 'response' field if available
+                entry['response'] = entry.get('response', {})
             
+            # Ensure the top-level 'citations' field for older entries (if not already parsed from raw_text)
             if 'citations' in entry and not isinstance(entry['citations'], list):
                 entry['citations'] = [entry['citations']]
+            # Ensure the top-level 'medicines' field for older entries (if not already parsed from raw_text)
+            if 'medicines' in entry and not isinstance(entry['medicines'], list):
+                entry['medicines'] = [entry['medicines']]
+
 
         return jsonify(history_data), 200
 
@@ -785,12 +819,12 @@ def get_history(current_user=None): # Accept current_user
         return jsonify({"error": str(e)}), 500
 
 
-# --- NEW PASSWORD RESET ENDPOINTS ---
+# --- PASSWORD RESET ENDPOINTS ---
 
 @app.route("/request-password-reset", methods=["POST"])
 @cross_origin()
-@token_required # Apply the decorator directly
-def request_password_reset(current_user=None): # Accept current_user
+@token_required
+def request_password_reset(current_user=None):
     data = request.get_json()
     email = data.get("email")
     frontend_redirect_url = data.get("redirect_to")
@@ -859,18 +893,42 @@ def delete_account(current_user=None):
 
         profile_url = f"{SUPABASE_URL}/rest/v1/profiles?user_id=eq.{user_id}"
         history_url = f"{SUPABASE_URL}/rest/v1/history?user_id=eq.{user_id}"
+        medications_url = f"{SUPABASE_URL}/rest/v1/medications?user_id=eq.{user_id}" # Assuming a 'medications' table too
 
         profile_response = requests.delete(profile_url, headers=anon_headers)
         history_response = requests.delete(history_url, headers=anon_headers)
+        medications_response = requests.delete(medications_url, headers=anon_headers)
 
         print(f"[DELETE] 🔄 Profile deleted: {profile_response.status_code}")
         print(f"[DELETE] 🔄 History deleted: {history_response.status_code}")
+        print(f"[DELETE] 🔄 Medications deleted: {medications_response.status_code}")
 
-        if profile_response.status_code not in [200, 204] or history_response.status_code not in [200, 204]:
+
+        # Check for success, allowing 200 (OK) or 204 (No Content)
+        if not (profile_response.status_code in [200, 204] and 
+                history_response.status_code in [200, 204] and
+                medications_response.status_code in [200, 204]):
+            
+            # Log details of failures
+            if profile_response.status_code not in [200, 204]:
+                logger.error(f"Failed to delete profile: {profile_response.status_code} - {profile_response.text}")
+            if history_response.status_code not in [200, 204]:
+                logger.error(f"Failed to delete history: {history_response.status_code} - {history_response.text}")
+            if medications_response.status_code not in [200, 204]:
+                logger.error(f"Failed to delete medications: {medications_response.status_code} - {medications_response.text}")
+
             return jsonify({
                 "result": {
                     "success": False,
-                    "error": "Failed to delete user profile or history"
+                    "error": "Failed to delete user data (profile, history, or medications)",
+                    "details": {
+                        "profile_status": profile_response.status_code,
+                        "history_status": history_response.status_code,
+                        "medications_status": medications_response.status_code,
+                        "profile_error": profile_response.text,
+                        "history_error": history_response.text,
+                        "medications_error": medications_response.text
+                    }
                 }
             }), 500
 
@@ -888,6 +946,7 @@ def delete_account(current_user=None):
         print(f"[AUTH DELETE] 🔐 Response: {auth_response.text}")
 
         if auth_response.status_code != 204:
+            logger.error(f"Failed to delete user from Supabase Auth: {auth_response.status_code} - {auth_response.text}")
             return jsonify({
                 "result": {
                     "success": False,
@@ -900,22 +959,19 @@ def delete_account(current_user=None):
         return jsonify({
             "result": {
                 "success": True,
-                "message": "Account and history deleted successfully."
+                "message": "Account and associated data deleted successfully."
             }
         }), 200
 
     except Exception as e:
-        print(f"[ERROR] ❌ Account deletion failed: {e}")
+        logger.exception("[ERROR] ❌ Account deletion failed unexpectedly:")
         return jsonify({
             "result": {
                 "success": False,
-                "error": "Internal server error",
+                "error": "Internal server error during account deletion",
                 "details": str(e)
             }
         }), 500
-
-
-
 
 
 @app.route("/verify-password-reset", methods=["GET"])
