@@ -26,19 +26,28 @@ CORS(app, resources={r"/*": {"origins": "*"}})
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# --- Environment Variables ---
-# These variables are loaded from your .env file.
-# Replace the placeholder default values with your actual keys in your .env file.
+# --- Environment Variables (Loaded from .env file) ---
+# IMPORTANT: Replace these placeholders with your actual keys in your .env file!
+# Example .env content:
+# OPENAI_API_KEY="sk-YOUR_ACTUAL_OPENAI_KEY"
+# DATABASE_URL="postgresql://user:pass@host:port/dbname"
+# GOOGLE_API_KEY="AIzaSyA_YOUR_GOOGLE_PLACES_API_KEY"
+# GOOGLE_VISION_API_KEY="AIzaSyB_YOUR_GOOGLE_VISION_API_KEY"
+# API_AUTH_TOKEN="YOUR_SECURE_RANDOM_AUTH_TOKEN"
+# SUPABASE_URL="https://your-project-id.supabase.co"
+# SUPABASE_ANON_KEY="eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
+# SUPABASE_SERVICE_ROLE_KEY="eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
+
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "YOUR_OPENAI_API_KEY_HERE")
 DATABASE_URL = os.getenv("DATABASE_URL", "YOUR_DATABASE_URL_HERE")
 GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY", "YOUR_GOOGLE_API_KEY_HERE")
 GOOGLE_VISION_API_KEY = os.getenv("GOOGLE_VISION_API_KEY", "YOUR_GOOGLE_VISION_API_KEY_HERE")
-API_AUTH_TOKEN = os.getenv("API_AUTH_TOKEN", "YOUR_API_AUTH_TOKEN_HERE")
+API_AUTH_TOKEN = os.getenv("API_AUTH_TOKEN", "YOUR_API_AUTH_TOKEN_HERE") 
 
-# Supabase Project URL and Anon/Service Role Keys
 SUPABASE_URL = os.getenv("SUPABASE_URL", "https://nlfvwbjpeywcessqyqac.supabase.co")
 SUPABASE_ANON_KEY = os.getenv("SUPABASE_ANON_KEY", "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im5sZnZ3YmpwZXl3Y2Vzc3F5cWFjIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NDU4NTczNjQsImV4cCI6MjA2MTQzMzM2NH0.zL84P7bK7qHxJt8MtkTPkqNe4U_K512ZgtpPvD9PoRI")
 SUPABASE_SERVICE_ROLE_KEY = os.getenv("SUPABASE_SERVICE_ROLE_KEY", "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im5sZnZ3YmpwZXl3Y2Vzc3F5cWFjIiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc0NTg1NzM2NCwiZXhwIjoyMDYxNDMzMzY0fQ.IC28ip8ky-qdHZkhoND-GUh1fY_y2H6qSxIGdD5WqS4")
+
 
 # Initialize Supabase client
 # Ensure you have 'supabase-py' installed: pip install supabase-py
@@ -73,7 +82,7 @@ def token_required(f):
             return make_response(jsonify({"error": "Unauthorized: Invalid API token"}), 401)
         
         # In a production app, you would decode and validate the JWT to get a real user ID.
-        # For this example, we pass a dummy user ID if auth passes.
+        # For this example, we'll pass a dummy user ID if auth passes.
         current_user = {"id": "auth_user_id"} 
         return f(current_user=current_user, *args, **kwargs)
     return decorated
@@ -222,7 +231,6 @@ def generate_openai_response(user_input_text, language, profile_context, prompt_
     13. hipaa_disclaimer: The exact disclaimer text: "Disclaimer: I am a virtual AI assistant and not a medical doctor. This information is for educational purposes only and is not a substitute for professional medical advice. Always consult a qualified healthcare provider for diagnosis and treatment."
     14. citations: An array of objects, where each object has "title" (string) and "url" (string) for source links. Provide at least 2-3 credible sources relevant to the generated analysis (e.g., Mayo Clinic, CDC, WebMD). If no specific source is directly applicable, return an empty array [].
     15. history_summary: (NEW) A list of up to 3 concise bullet points summarizing the key patient health facts from this interaction (e.g., primary symptom, detected condition, suggested urgency, and any medications mentioned).
-
     """
 
     if prompt_type == "symptoms":
@@ -595,6 +603,7 @@ def analyze_symptoms(current_user=None):
     except Exception as e:
         logger.exception("Error in /analyze route")
         return jsonify({'error': 'Failed to analyze symptoms', "details": str(e)}), 500
+
 @app.route('/analyze-trends', methods=['POST'])
 @cross_origin()
 @token_required
@@ -725,7 +734,7 @@ def analyze_photo(current_user=None):
     logger.info("📸 /photo-analyze: Analyzing image for labels and text")
 
     labels = get_image_labels(image_base64)
-    detected_text = get_image_text(image_base64)
+    detected_text = get_image_text(base64_image)
 
     image_description_for_llm = f"The image provides visual cues: {', '.join(labels)}."
     if detected_text:
@@ -768,7 +777,7 @@ def analyze_lab_report(current_user=None):
         logger.info("🧪 Using frontend extracted text for lab report analysis.")
     elif image_base64:
         logger.info("🧪 Performing OCR on backend for lab report image...")
-        extracted_text_from_backend = get_image_text(image_base64)
+        extracted_text_from_backend = get_image_text(base64_image)
         if not extracted_text_from_backend:
             return jsonify({"error": "OCR failed to extract text from backend for image"}), 500
         final_text_for_ai = extracted_text_from_backend
