@@ -830,6 +830,7 @@ def request_password_reset(current_user=None): # Accept current_user
 def test_log_route():
     print("[TEST LOG] This route was hit!")
     return jsonify({"message": "Logging works!"})
+    
 @app.route("/api/delete-account", methods=["POST"])
 @cross_origin()
 @token_required
