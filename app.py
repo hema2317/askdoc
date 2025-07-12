@@ -19,12 +19,14 @@ from dotenv import load_dotenv
 load_dotenv()
 
 app = Flask(__name__)
+# Ensure CORS is configured to allow all origins for development.
+# For production, restrict 'origins' to your frontend domain for security.
 CORS(app, resources={r"/*": {"origins": "*"}})
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Environment Variables
+# --- Environment Variables (Loaded from .env file) ---
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "YOUR_OPENAI_API_KEY_HERE")
 DATABASE_URL = os.getenv("DATABASE_URL", "YOUR_DATABASE_URL_HERE")
 GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY", "YOUR_GOOGLE_API_KEY_HERE")
@@ -44,9 +46,15 @@ openai.api_key = OPENAI_API_KEY
 
 @app.route("/")
 def health_check():
+    """Simple health check endpoint."""
     return "✅ AskDoc backend is running"
 
+# --- Authentication Middleware ---
 def token_required(f):
+    """
+    Decorator to ensure requests have a valid Bearer token.
+    In a real app, this would involve JWT validation.
+    """
     @wraps(f)
     def decorated(*args, **kwargs):
         auth_header = request.headers.get("Authorization")
@@ -54,7 +62,7 @@ def token_required(f):
             logger.warning("Unauthorized access attempt: No Bearer token provided or malformed header.")
             return make_response(jsonify({"error": "Unauthorized: Bearer token missing or malformed"}), 401)
 
-        token = auth_header.split(" ")[1]
+        token = auth_header.split(" ")[1] # Extract the token part
         if token != API_AUTH_TOKEN:
             logger.warning(f"Unauthorized access attempt: Invalid API token. Provided: {token[:5]}...")
             return make_response(jsonify({"error": "Unauthorized: Invalid API token"}), 401)
@@ -64,6 +72,7 @@ def token_required(f):
     return decorated
 
 def get_db_connection():
+    """Establishes a PostgreSQL database connection."""
     try:
         return psycopg2.connect(DATABASE_URL, sslmode='require')
     except OperationalError as e:
@@ -71,6 +80,7 @@ def get_db_connection():
         return None
 
 def build_profile_context(profile_json):
+    """Builds a human-readable context string from the user's profile data for AI prompts."""
     try:
         profile = json.loads(profile_json) if isinstance(profile_json, str) else profile_json
     except Exception:
@@ -89,24 +99,24 @@ def build_profile_context(profile_json):
 
     if medical_conditions := profile.get("medical_conditions"):
         if isinstance(medical_conditions, list):
-            lines.append("- Known Health Conditions: " + ", ".join(medical_conditions))
+            lines.append("- Known Medical Conditions: " + ", ".join(medical_conditions))
         elif isinstance(medical_conditions, str):
-            lines.append("- Known Health Conditions: " + medical_conditions)
+            lines.append("- Known Medical Conditions: " + medical_conditions)
     if current_medications := profile.get("medications"):
         if isinstance(current_medications, list):
-            lines.append("- Current Wellness Products: " + ", ".join(current_medications))
+            lines.append("- Current Medications: " + ", ".join(current_medications))
         elif isinstance(current_medications, str):
-            lines.append("- Current Wellness Products: " + current_medications)
+            lines.append("- Current Medications: " + current_medications)
     if family_history := profile.get("family_history"):
         if isinstance(family_history, list):
-            lines.append("- Family Health Background: " + ", ".join(family_history))
+            lines.append("- Family History of: " + ", ".join(family_history))
         elif isinstance(family_history, str):
-            lines.append("- Family Health Background: " + family_history)
+            lines.append("- Family History of: " + family_history)
     if known_diseases := profile.get("known_diseases"):
         if isinstance(known_diseases, list):
-            lines.append("- Other Known Health Considerations: " + ", ".join(known_diseases))
+            lines.append("- Other Known Diseases: " + ", ".join(known_diseases))
         elif isinstance(known_diseases, str):
-            lines.append("- Other Known Health Considerations: " + known_diseases)
+            lines.append("- Other Known Diseases: " + known_diseases)
 
     if smoker := profile.get("smoker"):
         lines.append(f"- Smoker: {'Yes' if smoker is True else 'No' if smoker is False else str(smoker)}")
@@ -129,8 +139,12 @@ def build_profile_context(profile_json):
     return "\n".join(lines)
 
 def save_medication_to_supabase(user_id, name, dose, timing, source="manual"):
+    """
+    Saves a detected medication to the Supabase 'medications' table.
+    Requires 'supabase-py' client initialized globally.
+    """
     if not name or not user_id:
-        logger.warning(f"Attempted to save wellness product without name or user_id. Name: {name}, User ID: {user_id}")
+        logger.warning(f"Attempted to save medication without name or user_id. Name: {name}, User ID: {user_id}")
         return
 
     data = {
@@ -144,61 +158,64 @@ def save_medication_to_supabase(user_id, name, dose, timing, source="manual"):
     try:
         response = supabase.table("medications").insert(data).execute()
         if response.data:
-            logger.info(f"✅ Saved wellness product to Supabase: {name} for user {user_id}")
+            logger.info(f"✅ Saved medication to Supabase: {name} for user {user_id}")
         else:
-            logger.error(f"❌ Failed to save wellness product {name} to Supabase: {response.error}")
+            logger.error(f"❌ Failed to save medication {name} to Supabase: {response.error}")
     except Exception as e:
-        logger.exception(f"Exception while saving wellness product {name} to Supabase for user {user_id}")
+        logger.exception(f"Exception while saving medication {name} to Supabase for user {user_id}")
 
 def generate_openai_response(user_input_text, language, profile_context, prompt_type="symptoms"):
+    """
+    Generates a detailed, nurse-like response from OpenAI based on input and profile.
+    Adapted for different prompt types (symptoms, photo, lab report).
+    """
+    
     health_metric_context = """
     Normal Ranges for reference (use only if explicitly mentioned, otherwise ignore):
-    - Blood Sugar (Fasting): 70-100 mg/dL (or 3.9-5.6 mmol/L). Below 70 mg/dL may indicate low blood sugar. Above 125 mg/dL may indicate high blood sugar.
+    - Blood Sugar (Fasting): 70-100 mg/dL (or 3.9-5.6 mmol/L). Below 70 mg/dL is Hypoglycemia (low). Above 125 mg/dL is Hyperglycemia (high).
     - Blood Pressure: Systolic < 120 mmHg, Diastolic < 80 mmHg.
-    - Temperature: Oral ~98.6°F (37°C). Above 100.4°F (38°C) may indicate fever.
+    - Temperature: Oral ~98.6°F (37°C). Fever generally >100.4°F (38°C).
     """
 
     system_prompt = f"""
-    You are an AI health assistant providing general wellness information. Your role is to help users understand potential health insights based on their symptoms and profile.
-    
-    IMPORTANT DISCLAIMER: 
-    - I am not a medical professional and cannot provide diagnoses or treatment plans.
-    - My responses are for informational purposes only and should not be considered medical advice.
-    - Always consult with a qualified healthcare provider for medical concerns.
+    You are a highly knowledgeable, empathetic, and responsible virtual health assistant. Your role is to act as a compassionate nurse or health educator.
+    You must *always* provide information that is easy to understand for a layperson.
+    Your initial greeting must *always* be a disclaimer.
+
+    Disclaimer: I am a virtual AI assistant and not a medical doctor. This information is for educational purposes only and is not a substitute for professional medical advice. Always consult a qualified healthcare provider for diagnosis and treatment.
 
     {health_metric_context}
 
     --- User's Health Profile ---
     {profile_context}
 
-    --- Instructions ---
-    Based on the provided information, offer:
-    1. Possible interpretations of symptoms (never diagnoses)
-    2. General wellness suggestions
-    3. When to consider professional consultation
-    4. Educational information about health metrics
+    --- Task Instructions ---
+    Based on the provided information and the user's health profile, provide a structured and detailed analysis.
+    Ensure the language is simple, supportive, and actionable, like a compassionate nurse explaining things.
+    **Crucially, explicitly use and reference information from the user's health profile to personalize the analysis, advice, and tips.** For example, if they have diabetes and report low sugar, tailor the advice by explicitly mentioning their diabetes. If they smoke, weave in advice related to smoking cessation for their condition.
+    Be very careful with numerical values for health metrics (like blood sugar); explicitly state if a number indicates "low," "normal," or "high" and specify units if implied.
 
-    Response Format (JSON):
-    {{
-        "health_insight": "General interpretation of symptoms (never a diagnosis)",
-        "possible_conditions": ["Possible conditions that might match these symptoms"],
-        "wellness_suggestions": ["General suggestions for self-care"],
-        "consider_professional_help": "When to consider consulting a healthcare provider",
-        "educational_info": "Helpful information about the symptoms",
-        "wellness_products": [{{"name": "Product name", "dose": "", "time": ""}}],
-        "urgency_level": "low/moderate/high",
-        "specialist_suggestion": "Type of specialist that might be helpful if symptoms persist",
-        "nursing_insight": "General nursing perspective on the situation",
-        "personal_notes": "Additional considerations",
-        "relevant_info": "Other relevant health context",
-        "disclaimer": "I am an AI assistant and not a medical professional. This information is educational only and not a substitute for professional medical advice.",
-        "sources": [{{"title": "", "url": ""}}],
-        "health_summary": ["Key points from this interaction"]
-    }}
+    Generate your response as a JSON object with the following keys. All explanations should be concise but informative, aiming for clarity and actionability for a layperson. If a field is not applicable or information is insufficient, you can state "Not applicable" or "Insufficient information.":
+
+    1.  detected_condition: A concise, most likely medical condition (e.g., 'Hypoglycemia', 'Common Cold', 'Muscle Strain').
+    2.  medical_analysis: A comprehensive overview of the condition and symptoms. Explain it in simple, layman's terms. **Directly relate it to the user's profile where relevant.**
+    3.  why_happening_explanation: Explain *why* the condition might be happening in simple, understandable terms. Consider profile factors like medications, habits, or pre-existing conditions.
+    4.  immediate_action: What the person should *do immediately* or in the very short term. Be specific, actionable, and prioritize safety.
+    5.  nurse_tips: **Proactive education and practical advice, like a nurse would provide.** This is where you significantly personalize guidance based on their profile. Include prevention, monitoring, or lifestyle advice tailored to their known conditions, habits (smoking, drinking, exercise), or family history.
+    6.  remedies: General suggestions for self-care or lifestyle adjustments for recovery or management.
+    7.  medications: An array of objects, where each object has "name" (string), "dose" (string), and "time" (string, e.g., "morning", "before bed", "as needed"). If no specific medications are directly suggested or detected, return an empty array [].
+    8.  urgency: Categorize the urgency (e.g., 'Immediate Emergency', 'Urgent Consult', 'Moderate', 'Low').
+    9.  suggested_doctor: The type of medical specialist they might need to see.
+    10. nursing_explanation: A simplified nursing explanation of the condition or situation.
+    11. personal_notes: Any additional personalized notes or considerations for the user.
+    12. relevant_information: Any other relevant health information or context.
+    13. hipaa_disclaimer: The exact disclaimer text: "Disclaimer: I am a virtual AI assistant and not a medical doctor. This information is for educational purposes only and is not a substitute for professional medical advice. Always consult a qualified healthcare provider for diagnosis and treatment."
+    14. citations: An array of objects, where each object has "title" (string) and "url" (string) for source links. Provide at least 2-3 credible sources relevant to the generated analysis (e.g., Mayo Clinic, CDC, WebMD). If no specific source is directly applicable, return an empty array [].
+    15. history_summary: A list of up to 3 concise bullet points summarizing the key patient health facts from this interaction (e.g., primary symptom, detected condition, suggested urgency, and any medications mentioned).
     """
 
     if prompt_type == "symptoms":
-        user_content = f"User reported: \"{user_input_text}\""
+        user_content = f"Symptoms: \"{user_input_text}\""
     elif prompt_type == "photo_analysis":
         user_content = f"Image shows: \"{user_input_text}\""
     elif prompt_type == "lab_report":
@@ -212,7 +229,7 @@ def generate_openai_response(user_input_text, language, profile_context, prompt_
         response = openai.ChatCompletion.create(
             model="gpt-4o",
             messages=[
-                {"role": "system", "content": "You are an AI health assistant providing general wellness information."},
+                {"role": "system", "content": "You are a helpful multilingual health assistant. Adhere strictly to the requested JSON format."},
                 {"role": "user", "content": full_user_message}
             ],
             temperature=0.4,
@@ -227,6 +244,11 @@ def generate_openai_response(user_input_text, language, profile_context, prompt_
         return None
 
 def parse_openai_json(reply):
+    """
+    Parses the JSON string from OpenAI's reply.
+    It's robust to cases where the reply might contain extra text outside the JSON block.
+    Ensures 'remedies', 'medicines', and 'citations' are always lists, and adds defaults for new fields.
+    """
     try:
         match = re.search(r'```json\s*(\{.*?\})\s*```', reply, re.DOTALL)
         if match:
@@ -238,65 +260,65 @@ def parse_openai_json(reply):
             
         parsed_data = json.loads(json_str)
 
-        wellness_suggestions = parsed_data.get('wellness_suggestions')
-        if not isinstance(wellness_suggestions, list):
-            parsed_data['wellness_suggestions'] = [wellness_suggestions] if wellness_suggestions else []
+        remedies = parsed_data.get('remedies')
+        if not isinstance(remedies, list):
+            parsed_data['remedies'] = [remedies] if remedies else []
             
-        wellness_products = parsed_data.get('wellness_products')
-        if not isinstance(wellness_products, list):
-            parsed_data['wellness_products'] = [wellness_products] if isinstance(wellness_products, dict) else []
-        parsed_data['wellness_products'] = [m for m in parsed_data['wellness_products'] if isinstance(m, dict)]
+        medicines = parsed_data.get('medicines')
+        if not isinstance(medicines, list):
+            parsed_data['medicines'] = [medicines] if isinstance(medicines, dict) else []
+        parsed_data['medicines'] = [m for m in parsed_data['medicines'] if isinstance(m, dict)]
 
-        sources = parsed_data.get('sources')
-        if not isinstance(sources, list):
-            parsed_data['sources'] = [sources] if isinstance(sources, dict) else []
-        parsed_data['sources'] = [c for c in parsed_data['sources'] if isinstance(c, dict)]
+        citations = parsed_data.get('citations')
+        if not isinstance(citations, list):
+            parsed_data['citations'] = [citations] if isinstance(citations, dict) else []
+        parsed_data['citations'] = [c for c in parsed_data['citations'] if isinstance(c, dict)]
 
-        health_summary = parsed_data.get('health_summary')
-        if not isinstance(health_summary, list):
-            parsed_data['health_summary'] = [health_summary] if isinstance(health_summary, str) else ["General health information not provided"]
+        history_summary = parsed_data.get('history_summary')
+        if not isinstance(history_summary, list):
+            parsed_data['history_summary'] = [history_summary] if isinstance(history_summary, str) else ["Detail analysis not provided"]
         
-        parsed_data.setdefault('health_insight', 'General health information')
-        parsed_data.setdefault('possible_conditions', ['Various possible conditions'])
-        parsed_data.setdefault('wellness_suggestions', [])
-        parsed_data.setdefault('consider_professional_help', 'Consult a healthcare provider if symptoms persist or worsen')
-        parsed_data.setdefault('educational_info', 'General health information')
-        parsed_data.setdefault('urgency_level', 'low')
-        parsed_data.setdefault('specialist_suggestion', 'General Practitioner')
-        parsed_data.setdefault('nursing_insight', 'General health perspective')
-        parsed_data.setdefault('personal_notes', 'Additional considerations may apply')
-        parsed_data.setdefault('relevant_info', 'General health context')
-        parsed_data.setdefault('disclaimer', "I am an AI assistant and not a medical professional. This information is educational only and not a substitute for professional medical advice.")
-        parsed_data.setdefault('sources', [])
-        parsed_data.setdefault('wellness_products', [])
-        parsed_data.setdefault('health_summary', ["General health information not provided"])
+        parsed_data.setdefault('detected_condition', 'Unsure')
+        parsed_data.setdefault('medical_analysis', 'I could not find anything specific.')
+        parsed_data.setdefault('why_happening_explanation', 'Not provided.')
+        parsed_data.setdefault('immediate_action', 'Consult a healthcare professional.')
+        parsed_data.setdefault('nurse_tips', 'Always seek medical advice from a qualified doctor.')
+        parsed_data.setdefault('urgency', 'Low')
+        parsed_data.setdefault('suggested_doctor', 'General Practitioner')
+        parsed_data.setdefault('nursing_explanation', 'Not provided.')
+        parsed_data.setdefault('personal_notes', 'Not provided.')
+        parsed_data.setdefault('relevant_information', 'Not provided.')
+        parsed_data.setdefault('hipaa_disclaimer', "Disclaimer: I am a virtual AI assistant and not a medical doctor. This information is for educational purposes only and is not a substitute for professional medical advice. Always consult a qualified healthcare provider for diagnosis and treatment.")
+        parsed_data.setdefault('citations', [])
+        parsed_data.setdefault('medications', [])
+        parsed_data.setdefault('history_summary', ["Detail analysis not provided"])
         
         return parsed_data
     except json.JSONDecodeError as e:
         logger.error(f"JSON parsing failed: {e}. Raw reply: {reply}")
         return {
-            "health_insight": "I couldn't fully process the request. Please try again or rephrase your symptoms.",
-            "possible_conditions": ["Various possible conditions"],
-            "wellness_suggestions": [],
-            "consider_professional_help": "Consult a healthcare provider if needed",
-            "disclaimer": "I am an AI assistant and not a medical professional. This information is educational only and not a substitute for professional medical advice.",
-            "urgency_level": "unknown",
-            "specialist_suggestion": "general",
-            "sources": [],
-            "health_summary": ["General health information not provided"]
+            "medical_analysis": "I'm sorry, I couldn't fully process the request. Please try again or rephrase your symptoms. (JSON Parse Error)",
+            "root_cause": "Parsing error or unclear AI response.",
+            "remedies": [], "medicines": [], "detected_condition": "unsure",
+            "why_happening_explanation": "Insufficient information.", "immediate_action": "Consult a healthcare professional.",
+            "nurse_tips": "It's important to provide clear and concise information for accurate analysis. Always seek medical advice from a qualified doctor.",
+            "hipaa_disclaimer": "Disclaimer: I am a virtual AI assistant and not a medical doctor. This information is for educational purposes only and is not a substitute for professional medical advice. Always consult a qualified healthcare provider for diagnosis and treatment.",
+            "urgency": "unknown", "suggested_doctor": "general",
+            "nursing_explanation": "Not provided.", "personal_notes": "Not provided.", "relevant_information": "Not provided.",
+            "citations": [], "history_summary": ["Detail analysis not provided"]
         }
     except Exception as e:
         logger.error(f"Unexpected error in JSON parsing: {e}")
         return {
-            "health_insight": "An unexpected error occurred during analysis. Please try again.",
-            "possible_conditions": ["Various possible conditions"],
-            "wellness_suggestions": [],
-            "consider_professional_help": "Consult a healthcare provider if needed",
-            "disclaimer": "I am an AI assistant and not a medical professional. This information is educational only and not a substitute for professional medical advice.",
-            "urgency_level": "unknown",
-            "specialist_suggestion": "general",
-            "sources": [],
-            "health_summary": ["General health information not provided"]
+            "medical_analysis": "An unexpected error occurred during analysis. Please try again. (Unknown Error)",
+            "root_cause": "Unknown error.",
+            "remedies": [], "medicines": [], "detected_condition": "unsure",
+            "why_happening_explanation": "An internal error occurred.", "immediate_action": "Consult a healthcare professional.",
+            "nurse_tips": "If issues persist, please contact support. Always seek medical advice from a qualified doctor.",
+            "hipaa_disclaimer": "Disclaimer: I am a virtual AI assistant and not a medical doctor. This information is for educational purposes only and is not a substitute for professional medical advice. Always consult a qualified healthcare provider for diagnosis and treatment.",
+            "urgency": "unknown", "suggested_doctor": "general",
+            "nursing_explanation": "Not provided.", "personal_notes": "Not provided.", "relevant_information": "Not provided.",
+            "citations": [], "history_summary": ["Detail analysis not provided"]
         }
 
 @app.route("/api/doctors", methods=["POST"])
@@ -342,6 +364,7 @@ def doctors_api(current_user=None):
     return jsonify({'results': doctors}), 200
 
 def get_nearby_doctors(specialty, location):
+    """Fetches nearby doctors using Google Places API."""
     if not GOOGLE_API_KEY:
         logger.error("GOOGLE_API_KEY is not set for Places API.")
         return []
@@ -408,6 +431,7 @@ def get_nearby_doctors(specialty, location):
         return []
 
 def get_image_labels(base64_image):
+    """Uses Google Vision API to get labels from an image."""
     if not GOOGLE_VISION_API_KEY:
         logger.error("GOOGLE_VISION_API_KEY is not set for Vision API.")
         return []
@@ -432,6 +456,7 @@ def get_image_labels(base64_image):
         return []
 
 def get_image_text(base64_image):
+    """Uses Google Vision API to perform OCR (Text Detection) on an image."""
     if not GOOGLE_VISION_API_KEY:
         logger.error("GOOGLE_VISION_API_KEY is not set for Vision API.")
         return ""
@@ -458,6 +483,7 @@ def get_image_text(base64_image):
 
 @app.route("/health", methods=["GET"])
 def health():
+    """Endpoint for health check."""
     return jsonify({"status": "ok", "timestamp": datetime.now().isoformat()})
 
 @app.route("/analyze", methods=["POST"])
@@ -475,7 +501,7 @@ def analyze_symptoms(current_user=None):
         if not symptoms:
             return jsonify({'error': 'Symptoms required'}), 400
         if not user_id:
-            logger.warning("Analyze request received without user_id. History and wellness products cannot be saved.")
+            logger.warning("Analyze request received without user_id. History and medications cannot be saved.")
 
         logger.info(f"[ANALYZE] Input: {symptoms}, User ID: {user_id}")
         profile_context = build_profile_context(profile_data)
@@ -486,8 +512,8 @@ def analyze_symptoms(current_user=None):
             
         result_json = parse_openai_json(ai_response_content) 
 
-        if user_id and result_json.get("wellness_products"):
-            for med in result_json["wellness_products"]:
+        if user_id and result_json.get("medications"):
+            for med in result_json["medications"]:
                 if isinstance(med, dict):
                     save_medication_to_supabase(
                         user_id=user_id, 
@@ -497,27 +523,27 @@ def analyze_symptoms(current_user=None):
                         source="chat"
                     )
 
-        if location and result_json.get("specialist_suggestion"):
-            result_json["nearby_doctors"] = get_nearby_doctors(result_json["specialist_suggestion"], location)
+        if location and result_json.get("suggested_doctor"):
+            result_json["nearby_doctors"] = get_nearby_doctors(result_json["suggested_doctor"], location)
         else:
             result_json["nearby_doctors"] = []
 
         if user_id:
             try:
-                health_summary_data = result_json.get("health_summary", ["General health information not provided"])
-                if not isinstance(health_summary_data, list):
-                    health_summary_data = [health_summary_data]
+                history_summary_data = result_json.get("history_summary", ["Detail analysis not provided"])
+                if not isinstance(history_summary_data, list):
+                    history_summary_data = [history_summary_data]
 
                 save_payload = {
                     "id": str(uuid.uuid4()),
                     "user_id": user_id,
                     "query": symptoms,
                     "response": result_json,
-                    "summary": health_summary_data,
-                    "detected_condition": result_json.get("possible_conditions", ["Various possible conditions"])[0],
-                    "medical_analysis": result_json.get("health_insight"),
-                    "urgency": result_json.get("urgency_level"),
-                    "suggested_doctor": result_json.get("specialist_suggestion"),
+                    "summary": history_summary_data,
+                    "detected_condition": result_json.get("detected_condition"),
+                    "medical_analysis": result_json.get("medical_analysis"),
+                    "urgency": result_json.get("urgency"),
+                    "suggested_doctor": result_json.get("suggested_doctor"),
                     "timestamp": datetime.utcnow().isoformat(),
                     "raw_text": json.dumps(result_json)
                 }
@@ -561,34 +587,33 @@ def analyze_trends(current_user=None):
             trend_input += f"- Date: {date}, Issue: {issue}, Symptom: {symptom}, Severity: {severity}/10, Status: {status}\n"
 
         prompt = f"""
-You are an AI health assistant analyzing symptom patterns. Provide general insights only, not medical advice.
-
+You are a medical AI assistant analyzing a user's symptom timeline to identify health trends.
 {profile_context}
 
-The user has logged these symptoms over time:
+The user has logged the following symptoms over time:
 
 {trend_input}
 
-Generate a wellness-focused summary with:
-- Observed symptom patterns
-- General wellness suggestions
-- When to consider professional consultation
-- Educational information
+Please generate a concise and actionable health trend summary based on the provided timeline.
+The summary should be in 4-6 bullet points and adhere to the following:
+- Identify and describe **patterns or recurring symptoms** (e.g., "Headaches appearing every Tuesday").
+- Mention if the overall **condition seems to be improving, worsening, or remaining stable** based on severity and status.
+- **Suggest if medical attention is advised** (e.g., "Consult a doctor if symptoms persist").
+- Offer **AI-generated general tips** (e.g., "Ensure adequate hydration," "Prioritize consistent sleep," "Consider stress reduction techniques.").
+- Include **citations** (at least 1-2 credible sources like CDC, Mayo Clinic, WebMD) related to common trends or general health advice in the format: "Citations: [Title](URL), [Title](URL)". If no direct citation applies, state "No specific citations for trends."
 
-Include this disclaimer:
-"Note: I am not a medical professional. This is general wellness information only. Always consult a healthcare provider for medical concerns."
-
-Example format:
-- Pattern: ...
-- Wellness suggestions: ...
-- Consider professional help if: ...
-- Educational notes: ...
+Example of desired output format for trends:
+- Pattern identified: ...
+- Trend observed: ...
+- Medical advice: ...
+- AI tips: ...
+Citations: [Title](URL), [Title](URL)
 """
 
         response = openai.ChatCompletion.create(
             model="gpt-4o",
             messages=[
-                {"role": "system", "content": "You are an AI health assistant providing general wellness insights."},
+                {"role": "system", "content": "You are a helpful medical AI assistant summarizing health trends based on provided symptom timelines."},
                 {"role": "user", "content": prompt}
             ],
             temperature=0.7,
@@ -597,12 +622,26 @@ Example format:
 
         summary_text = response['choices'][0]['message']['content'].strip()
 
+        citations_match = re.search(r'Citations:\s*(.*)', summary_text, re.IGNORECASE)
+        citations_list = []
+        if citations_match:
+            citations_str = citations_match.group(1).strip()
+            summary_text = summary_text.replace(citations_match.group(0), "").strip()
+
+            if citations_str.lower() != "no specific citations for trends.":
+                link_pattern = re.compile(r'\[(.*?)\]\((.*?)\)')
+                for match in link_pattern.finditer(citations_str):
+                    citations_list.append({"title": match.group(1), "url": match.group(2)})
+        
+        if not citations_list:
+            citations_list.append({
+                "title": "General Health Trends & Wellness",
+                "url": "https://www.who.int/health-topics/health-and-wellness"
+            })
+
         return jsonify({ 
             "summary": summary_text,
-            "sources": [{
-                "title": "General Health Information",
-                "url": "https://www.cdc.gov/healthcommunication/toolstemplates/entertainmented/tips/GeneralHealth.html"
-            }]
+            "citations": citations_list
         })
 
     except openai.APIError as e:
@@ -667,8 +706,8 @@ def analyze_photo(current_user=None):
 
     parsed_analysis = parse_openai_json(llm_reply_content)
 
-    if location_data and parsed_analysis.get("specialist_suggestion"):
-        parsed_analysis["nearby_doctors"] = get_nearby_doctors(parsed_analysis["specialist_suggestion"], location_data)
+    if location_data and parsed_analysis.get("suggested_doctor"):
+        parsed_analysis["nearby_doctors"] = get_nearby_doctors(parsed_analysis["suggested_doctor"], location_data)
     else:
         parsed_analysis["nearby_doctors"] = []
     
@@ -711,8 +750,8 @@ def analyze_lab_report(current_user=None):
 
     parsed_response = parse_openai_json(reply_content)
 
-    if location and parsed_response.get("specialist_suggestion"):
-        parsed_response["nearby_doctors"] = get_nearby_doctors(parsed_response["specialist_suggestion"], location)
+    if location and parsed_response.get("suggested_doctor"):
+        parsed_response["nearby_doctors"] = get_nearby_doctors(parsed_response["suggested_doctor"], location)
     else:
         parsed_response["nearby_doctors"] = []
 
@@ -734,43 +773,43 @@ def save_history(current_user=None):
 
         parsed_response = response if isinstance(response, dict) else json.loads(response)
 
-        wellness_products = parsed_response.get('wellness_products')
-        wellness_suggestions = parsed_response.get('wellness_suggestions')
-        sources = parsed_response.get('sources')
-        health_summary_data = parsed_response.get('health_summary', ["General health information not provided"])
+        medicines = parsed_response.get("medicines")
+        remedies = parsed_response.get("remedies")
+        citations = parsed_response.get("citations")
+        history_summary_data = parsed_response.get("history_summary", ["Detail analysis not provided"])
 
-        if not isinstance(wellness_products, list):
-            wellness_products = [wellness_products] if isinstance(wellness_products, dict) else [] 
-        if not isinstance(wellness_suggestions, list):
-            wellness_suggestions = [wellness_suggestions] if wellness_suggestions else []
-        if not isinstance(sources, list):
-            sources = [sources] if isinstance(sources, dict) else []
-        if not isinstance(health_summary_data, list):
-            health_summary_data = [health_summary_data]
+        if not isinstance(medicines, list):
+            medicines = [medicines] if isinstance(medicines, dict) else [] 
+        if not isinstance(remedies, list):
+            remedies = [remedies] if remedies else []
+        if not isinstance(citations, list):
+            citations = [citations] if isinstance(citations, dict) else []
+        if not isinstance(history_summary_data, list):
+            history_summary_data = [history_summary_data]
         
-        wellness_products = [m for m in wellness_products if isinstance(m, dict)]
-        sources = [c for c in sources if isinstance(c, dict)]
+        medicines = [m for m in medicines if isinstance(m, dict)]
+        citations = [c for c in citations if isinstance(c, dict)]
 
         payload = {
             "id": str(uuid.uuid4()),
             "user_id": user_id,
             "query": query,
-            "detected_condition": parsed_response.get("possible_conditions", ["Various possible conditions"])[0],
-            "medical_analysis": parsed_response.get("health_insight"),
-            "remedies": wellness_suggestions,
-            "urgency": parsed_response.get("urgency_level"),
-            "medicines": wellness_products, 
-            "suggested_doctor": parsed_response.get("specialist_suggestion"),
+            "detected_condition": parsed_response.get("detected_condition"),
+            "medical_analysis": parsed_response.get("medical_analysis"),
+            "remedies": remedies,
+            "urgency": parsed_response.get("urgency"),
+            "medicines": medicines, 
+            "suggested_doctor": parsed_response.get("suggested_doctor"),
             "raw_text": json.dumps(parsed_response),
             "timestamp": datetime.utcnow().isoformat(),
-            "nursing_explanation": parsed_response.get("nursing_insight"),
+            "nursing_explanation": parsed_response.get("nursing_explanation"),
             "personal_notes": parsed_response.get("personal_notes"),
-            "relevant_information": parsed_response.get("relevant_info"),
-            "why_happening_explanation": parsed_response.get("educational_info"),
-            "immediate_action": parsed_response.get("consider_professional_help"),
-            "nurse_tips": parsed_response.get("wellness_suggestions"),
-            "citations": sources,
-            "summary": health_summary_data
+            "relevant_information": parsed_response.get("relevant_information"),
+            "why_happening_explanation": parsed_response.get("why_happening_explanation"),
+            "immediate_action": parsed_response.get("immediate_action"),
+            "nurse_tips": parsed_response.get("nurse_tips"),
+            "citations": citations,
+            "summary": history_summary_data
         }
 
         logger.info(f"Saving history for user_id: {user_id}")
@@ -820,7 +859,7 @@ def get_history(current_user=None):
             if 'raw_text' in entry and isinstance(entry['raw_text'], str):
                 try:
                     entry['response'] = json.loads(entry['raw_text'])
-                    for key in ['citations', 'wellness_products', 'health_summary']:
+                    for key in ['citations', 'medications', 'history_summary']:
                         if key in entry['response'] and not isinstance(entry['response'][key], list):
                             entry['response'][key] = [entry['response'][key]] if entry['response'][key] else []
                 except json.JSONDecodeError:
