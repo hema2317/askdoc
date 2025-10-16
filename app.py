@@ -395,6 +395,20 @@ def analyze_symptoms(current_user=None):
     except Exception as e:
         logger.exception("Error in /analyze")
         return jsonify({"error": "Failed to analyze symptoms", "details": str(e)}), 500
+        
+@app.route("/api/doctors", methods=["POST"])
+@cross_origin()
+@token_required
+def api_doctors(current_user=None):
+    try:
+        body = request.get_json() or {}
+        specialty = body.get("specialty") or "general"
+        location = body.get("location")  # {"lat":..,"lng":..} or "lat,lng"
+        doctors = get_nearby_doctors(specialty, location)
+        return jsonify({"doctors": doctors}), 200
+    except Exception as e:
+        logger.exception("Error in /api/doctors")
+        return jsonify({"error": "Failed to fetch doctors", "details": str(e)}), 500
 
 @app.route("/debug/openai", methods=["GET"])
 def debug_openai():
