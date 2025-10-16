@@ -181,15 +181,19 @@ Return a single JSON object with keys:
             temperature=0.4,
             response_format={"type": "json_object"},
             messages=[
-                {
-                    "role": "system",
-                    "content": (
+                 {
+        "role": "system",
+        "content": (
             "You are a careful, empathetic health educator. Do NOT diagnose or prescribe. "
-            "Frame all outputs as suggestions for self-care and information the user may discuss "
-            "with a clinician. Use language like 'may', 'could', 'consider', 'it might help to'. "
-            "Avoid imperative medical directives (no 'take', 'start', 'stop', 'must'). "
-            "Do not name prescription-only drugs. If OTC options are mentioned, keep them generic "
-            "and add 'ask a pharmacist or clinician if appropriate for you'. Return the exact JSON keys requested."
+            "Frame all outputs as suggestions for self-care and information the user may discuss with a clinician. "
+            "Use language like 'may', 'could', 'consider', 'it might help to'. "
+            "Avoid imperatives such as 'take', 'start', 'stop', 'must'. "
+            "Do not name prescription-only drugs. OTC mentions must be generic and followed by "
+            "'ask a pharmacist or clinician if appropriate for you'. "
+            "Incorporate the user's profile (conditions, allergies, current medications, age, lifestyle) to tailor gentle suggestions, "
+            "including potential reasons something may be happening. "
+            "Be concise but a bit more elaborative than bullet points—2–4 short sentences per section is fine. "
+            "Return exactly the requested JSON keys."
         ),
     },
     {"role": "user", "content": full_user_message},
@@ -599,19 +603,19 @@ def save_history(current_user=None):
         if not user_id or not query or not response:
             return jsonify({"error": "Missing user_id, query, or response"}), 400
 
+        # 👇 get the user's Supabase JWT from header (preferred) or body (fallback)
+        supa_jwt = request.headers.get("X-Supabase-Auth") or data.get("supabase_token")
+        if not supa_jwt:
+            return jsonify({"error": "Missing Supabase auth token"}), 401
+
         parsed = response if isinstance(response, dict) else json.loads(response)
 
-        # normalize
         medicines = parsed.get("medicines")
         remedies = parsed.get("remedies")
         citations = parsed.get("citations")
-
-        if not isinstance(medicines, list):
-            medicines = [medicines] if isinstance(medicines, dict) else []
-        if not isinstance(remedies, list):
-            remedies = [remedies] if remedies else []
-        if not isinstance(citations, list):
-            citations = [citations] if isinstance(citations, dict) else []
+        if not isinstance(medicines, list): medicines = [medicines] if isinstance(medicines, dict) else []
+        if not isinstance(remedies, list): remedies = [remedies] if remedies else []
+        if not isinstance(citations, list): citations = [citations] if isinstance(citations, dict) else []
 
         payload = {
             "id": str(uuid.uuid4()),
@@ -637,7 +641,8 @@ def save_history(current_user=None):
         url = f"{SUPABASE_URL}/rest/v1/history"
         headers = {
             "apikey": SUPABASE_ANON_KEY,
-            "Authorization": f"Bearer {SUPABASE_ANON_KEY}",
+            # 👇 **use the user's JWT** so RLS sees auth.uid()
+            "Authorization": f"Bearer {supa_jwt}",
             "Content-Type": "application/json",
             "Prefer": "return=representation",
         }
@@ -646,6 +651,7 @@ def save_history(current_user=None):
             logger.error(f"Supabase insert error: {r.text}")
             return jsonify({"error": "Failed to save history", "details": r.text}), 500
         return jsonify({"success": True, "data": r.json()}), 200
+
     except Exception as e:
         logger.exception("Exception while saving history")
         return jsonify({"error": str(e)}), 500
@@ -659,12 +665,19 @@ def get_history(current_user=None):
         if not user_id:
             return jsonify({"error": "Missing user_id"}), 400
 
+        # 👇 Require the caller's Supabase JWT (same header you added for POST)
+        supa_jwt = request.headers.get("X-Supabase-Auth")
+        if not supa_jwt:
+            return jsonify({"error": "Missing Supabase auth token"}), 401
+
         url = f"{SUPABASE_URL}/rest/v1/history?user_id=eq.{user_id}&order=timestamp.desc"
         headers = {
             "apikey": SUPABASE_ANON_KEY,
-            "Authorization": f"Bearer {SUPABASE_ANON_KEY}",
+            # 👇 Use the user's JWT so RLS sees auth.uid()
+            "Authorization": f"Bearer {supa_jwt}",
             "Content-Type": "application/json",
         }
+
         r = requests.get(url, headers=headers, timeout=30)
         if r.status_code != 200:
             logger.error(f"Supabase fetch error: {r.text}")
@@ -680,9 +693,11 @@ def get_history(current_user=None):
                 except Exception:
                     entry["response"] = {}
         return jsonify(history), 200
+
     except Exception as e:
         logger.exception("Exception while fetching history")
         return jsonify({"error": str(e)}), 500
+
 
 # --- Password reset (Supabase Auth) ---
 @app.route("/request-password-reset", methods=["POST"])
