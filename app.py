@@ -698,6 +698,22 @@ def get_history(current_user=None):
         logger.exception("Exception while fetching history")
         return jsonify({"error": str(e)}), 500
 
+@app.route("/debug/whoami", methods=["GET"])
+@cross_origin()
+def whoami():
+    supa_jwt = request.headers.get("X-Supabase-Auth", "")
+    info = {"has_token": bool(supa_jwt)}
+    try:
+        parts = supa_jwt.split(".")
+        if len(parts) >= 2:
+            payload = json.loads(base64.urlsafe_b64decode(parts[1] + "==").decode("utf-8"))
+            info["jwt_sub"] = payload.get("sub")   # this must equal profile.user_id
+            info["email"] = payload.get("email")
+        else:
+            info["error"] = "Malformed JWT"
+    except Exception as e:
+        info["error"] = f"Decode failed: {e}"
+    return jsonify(info), 200
 
 # --- Password reset (Supabase Auth) ---
 @app.route("/request-password-reset", methods=["POST"])
