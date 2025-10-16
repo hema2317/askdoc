@@ -183,9 +183,16 @@ Return a single JSON object with keys:
             messages=[
                 {
                     "role": "system",
-                    "content": "You are a helpful multilingual health assistant. Adhere strictly to the requested JSON format."
-                },
-                {"role": "user", "content": full_user_message},
+                    "content": (
+            "You are a careful, empathetic health educator. Do NOT diagnose or prescribe. "
+            "Frame all outputs as suggestions for self-care and information the user may discuss "
+            "with a clinician. Use language like 'may', 'could', 'consider', 'it might help to'. "
+            "Avoid imperative medical directives (no 'take', 'start', 'stop', 'must'). "
+            "Do not name prescription-only drugs. If OTC options are mentioned, keep them generic "
+            "and add 'ask a pharmacist or clinician if appropriate for you'. Return the exact JSON keys requested."
+        ),
+    },
+    {"role": "user", "content": full_user_message},
             ],
         )
         return resp.choices[0].message.content
@@ -403,7 +410,7 @@ def api_doctors(current_user=None):
     try:
         body = request.get_json() or {}
         specialty = body.get("specialty") or "general"
-        location = body.get("location")  # {"lat":..,"lng":..} or "lat,lng"
+        location = body.get("location")  # {lat, lng} or "lat,lng"
         doctors = get_nearby_doctors(specialty, location)
         return jsonify({"doctors": doctors}), 200
     except Exception as e:
@@ -469,6 +476,60 @@ def analyze_photo(current_user=None):
     except Exception as e:
         logger.exception("Error in /photo-analyze")
         return jsonify({"error": "Failed to analyze image", "details": str(e)}), 500
+        
+@app.route("/profile-suggestions", methods=["POST"])
+@cross_origin()
+@token_required
+def profile_suggestions(current_user=None):
+    try:
+        data = request.get_json() or {}
+        profile_data = data.get("profile", {})
+        concerns = data.get("concerns", "")
+        language = data.get("language", "English")
+
+        profile_context = build_profile_context(profile_data)
+
+        prompt = f"""
+You act as a health educator, not a clinician. Based ONLY on the user's profile and stated concerns,
+provide suggestion-only guidance for self-care and discussion points the user may talk about with a professional.
+Use cautious language: 'may', 'could', 'consider'. Avoid diagnosis, avoid prescription drug names, avoid directives.
+
+Return JSON with keys:
+- overview
+- personalized_suggestions (array of bullets)
+- lifestyle_ideas (array)
+- screenings_to_consider (array; generic names only, e.g., 'blood pressure check')
+- questions_for_doctor (array)
+- helpful_resources (array of {{title, url}})
+- disclaimer (non-clinical)
+---
+User profile:
+{profile_context}
+
+User concerns (optional):
+{concerns}
+"""
+
+        resp = client.chat.completions.create(
+            model="gpt-4o-mini",
+            temperature=0.4,
+            response_format={"type": "json_object"},
+            messages=[
+                {
+                    "role": "system",
+                    "content": (
+                        "Be conservative and suggestion-only. No diagnosis. No prescriptions. "
+                        "Do not promise outcomes. Keep tone supportive and clear."
+                    ),
+                },
+                {"role": "user", "content": prompt},
+            ],
+        )
+        content = resp.choices[0].message.content
+        return jsonify(json.loads(content)), 200
+    except Exception as e:
+        logger.exception("Error in /profile-suggestions")
+        return jsonify({"error": "Failed to generate profile suggestions"}), 500
 
 @app.route("/analyze-lab-report", methods=["POST"])
 @cross_origin()
